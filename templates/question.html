@@ -1,14 +1,23 @@
 <!DOCTYPE html>
 <html>
 <head>
-<title>Question List</title>
+    <title>Question List</title>
 </head>
 <body>
     <h1>Question Bank</h1>
 
     <p>Welcome, {{ username }}.</p>
 
-    <p>This is the question list page.</p>
+    <h2>Questions</h2>
+
+    <ul>
+        {% for question in questions %}
+            <li>
+                <strong>{{ question.id }}. {{ question.title }}</strong>
+                <p>{{ question.content }}</p>
+            </li>
+        {% endfor %}
+    </ul>
 
     <a href="{{ url_for('logout') }}">Logout</a>
 </body>

@@ -8,6 +8,24 @@ USER = {
     "teacher2": "456789"
 }
 
+QUESTIONS = [
+    {
+        "id": 1,
+        "title": "Python",
+        "content": "Explain what a variable is in Python."
+    },
+    {
+        "id": 2,
+        "title": "SQL",
+        "content": "Write a SQL query to select all students."
+    },
+    {
+        "id": 3,
+        "title": "Algorithms and Data Structures",
+        "content": "Explain what a linked list is."
+    }
+]
+
 @app.route('/')
 def home():
     return redirect(url_for('login'))
@@ -22,7 +40,7 @@ def login():
         if username in USER and USER[username] == password:
             session['logged_in'] = True
             session['username'] = username
-            return redirect(url_for('question'))
+            return redirect(url_for('question_list'))
         else: 
             error = 'Invalid Credentials. Please try again.'
 
@@ -32,7 +50,7 @@ def login():
 def question_list():
     if not session.get('logged_in'):
         return redirect(url_for('login'))
-    return render_template('question.html', username=session.get('username'))
+    return render_template('question.html', username=session.get('username'), questions=QUESTIONS)
 
 @app.route('/logout')
 def logout():
