@@ -1,0 +1,420 @@
+# Development Log 001 — Login Function
+
+## Date
+2026-06-26
+
+## Development Goal
+The first development goal was to build a basic login function for the exam question bank platform.
+
+The system should allow teacher users to enter a username and password. If the credentials are correct, the user should be redirected to the question bank page. If the credentials are incorrect, the user should remain on the login page and see an error message.
+
+The system should also prevent unauthenticated users from directly accessing the question list page.
+
+## Functional Requirements
+1. Display a login page with username and password input fields.
+2. Predefine two teacher accounts for the first prototype.
+3. Validate user input when the login form is submitted.
+4. Redirect valid users to the question bank page.
+5. Show an error message for invalid login attempts.
+6. Use Flask session to store login status.
+7. Redirect unauthenticated users back to the login page when they try to access the question list page.
+8. Provide a logout function to clear the session.
+
+## Technical Implementation
+This stage was implemented using Flask.
+
+The `/login` route handles both GET and POST requests. A GET request displays the login form, while a POST request receives the submitted username and password.
+
+Two test accounts were stored in a Python dictionary. This approach was chosen because the first prototype focuses on authentication flow rather than database design.
+
+Flask session was used to store the login state:
+
+- `session['logged_in'] = True`
+- `session['username'] = username`
+
+The `/questions` route checks whether the user is logged in before displaying the question bank page. If the session does not contain a valid login state, the system redirects the user back to `/login`.
+
+The `/logout` route clears the session and redirects the user to the login page.
+
+## Problems Encountered
+One issue occurred when redirecting the user after successful login.
+
+The code originally used:
+
+```python
+return redirect(url_for('question'))
+
+# Development Log 002 — Question List Page
+
+## Date
+
+2026-06-26
+
+## Development Goal
+
+The second development goal was to build a basic question list page after the login function was completed.
+
+After a teacher logs in successfully, the system should redirect the user to the `/questions` page and display a list of questions.
+
+At this stage, no database is used. The question data is temporarily stored in a Python list for prototype testing.
+
+## Functional Requirements
+
+1. Redirect authenticated users to the question list page after login.
+2. Display the current logged-in username on the question page.
+3. Display a list of questions.
+4. Show each question’s id, title, and content.
+5. Prevent unauthenticated users from directly accessing `/questions`.
+6. Provide a logout link to clear the session.
+
+## Technical Implementation
+
+A temporary `QUESTIONS` list was created in `app.py`.
+
+Each question is stored as a Python dictionary with three fields:
+
+* `id`
+* `title`
+* `content`
+
+The `/questions` route checks the session before rendering the page. If the user is not logged in, the system redirects the user back to `/login`.
+
+If the user is logged in, Flask passes both the username and the question list to the template:
+
+```python
+return render_template(
+    'question.html',
+    username=session.get('username'),
+    questions=QUESTIONS
+)
+```
+
+The `question.html` template uses a Jinja2 for loop to display each question:
+
+```html
+{% for question in questions %}
+    <li>
+        <strong>{{ question.id }}. {{ question.title }}</strong>
+        <p>{{ question.content }}</p>
+    </li>
+{% endfor %}
+```
+
+## Problems Encountered
+
+### Problem 1: The question list was not displayed
+
+The template contained a loop:
+
+```html
+{% for question in questions %}
+```
+
+However, the backend did not initially pass the `questions` variable into the template.
+
+The original route only passed the username:
+
+```python
+return render_template('question.html', username=session.get('username'))
+```
+
+As a result, the HTML page did not receive the question data, so the list could not be displayed.
+
+### Solution
+
+The `questions=QUESTIONS` argument was added to `render_template()`:
+
+```python
+return render_template(
+    'question.html',
+    username=session.get('username'),
+    questions=QUESTIONS
+)
+```
+
+### Learning
+
+I learned that Flask templates cannot automatically access Python variables from `app.py`.
+
+Data must be explicitly passed from the route function to the HTML template using `render_template()`.
+
+---
+
+### Problem 2: Only id and title were displayed, but content was missing
+
+The reason was that the HTML template only contained:
+
+```html
+{{ question.id }}. {{ question.title }}
+```
+
+Therefore, only the id and title were shown.
+
+### Solution
+
+The content field was added to the template:
+
+```html
+<p>{{ question.content }}</p>
+```
+
+### Learning
+
+I learned that a template only displays the fields that are explicitly written in the HTML.
+
+Even if the Python dictionary contains more fields, they will not appear on the page unless they are referenced in the template.
+
+## Testing Record
+
+### Test 1: Successful login and redirect
+
+Input:
+
+```text
+username = teacher1
+password = 123456
+```
+
+Result:
+The user was successfully redirected to `/questions`.
+
+Status: Passed
+
+### Test 2: Display username
+
+Result:
+The question page displayed the logged-in username.
+
+Status: Passed
+
+### Test 3: Display question list
+
+Result:
+The page displayed multiple questions with id, title, and content.
+
+Status: Passed
+
+### Test 4: Protect question page
+
+Action:
+Accessed `/questions` without logging in.
+
+Result:
+The system redirected the user back to `/login`.
+
+Status: Passed
+
+### Test 5: Logout
+
+Action:
+Clicked the Logout link.
+
+Result:
+The session was cleared and the user returned to `/login`.
+
+Status: Passed
+
+## Summary
+
+Today I completed the second stage of the prototype: the question list page.
+
+I learned how Flask passes data from the backend to the frontend template, how Jinja2 loops through a list, and why each displayed field must be written explicitly in the HTML template.
+
+The current system now supports:
+
+1. Login
+2. Session-based access control
+3. Logout
+4. Displaying a basic question list after login
+
+
+# Development Log 003 — Question List Table
+
+## Date
+
+2026-06-27
+
+## Development Goal
+
+After completing the basic question list page, the next goal was to redesign it as a table so that it more closely resembles a real exam question bank system.
+
+At this stage, the application still stores question data in a Python list rather than a database. The main objective was to practice passing data from Flask to an HTML template and displaying it dynamically using Jinja2.
+
+## Functional Requirements
+
+1. Redirect users to `/questions` after successful login.
+2. Display the logged-in username.
+3. Display the question bank as a table.
+4. Display the following fields for each question:
+
+   * Question
+   * Actions
+   * Status
+   * Version
+   * Created by
+   * Comments
+   * Needs checking?
+   * Facility index
+   * Discriminative efficiency
+   * Usage
+   * Last used
+   * Modify
+5. Display a message when no questions are available.
+6. Keep the Logout link.
+
+## Technical Implementation
+
+The temporary `QUESTIONS` data structure in `app.py` was expanded from a simple dictionary into a more realistic question record containing multiple fields.
+
+The `question.html` template was redesigned using an HTML table.
+
+Several placeholder links were also added for future features:
+
+```html
+<a href="#">Create New Question</a>
+<a href="#">Reset Columns</a>
+<a href="#">Show question text in the question list?</a>
+```
+
+The `href="#"` value is used as a placeholder link. The actual functionality will be implemented in a later stage.
+
+## Problems Encountered
+
+### Problem 1: Some fields could not be displayed correctly
+
+Some dictionary keys contain spaces or special characters, for example:
+
+```python
+"Created by"
+"Needs checking?"
+"Facility index"
+"Discriminative efficiency"
+"Last used"
+```
+
+Using dot notation such as:
+
+```html
+{{ question.Created by }}
+```
+
+caused Jinja2 to fail because these keys are not valid attribute names.
+
+### Solution
+
+Dictionary indexing was used instead:
+
+```html
+{{ question["Created by"] }}
+{{ question["Needs checking?"] }}
+{{ question["Facility index"] }}
+{{ question["Discriminative efficiency"] }}
+{{ question["Last used"] }}
+```
+
+### Learning
+
+I learned that Jinja2 provides two ways to access dictionary values.
+
+For normal keys, dot notation can be used:
+
+```html
+{{ question.Question }}
+```
+
+However, when a key contains spaces or special characters, bracket notation must be used:
+
+```html
+{{ question["Created by"] }}
+```
+
+---
+
+### Problem 2: Display different content when no questions exist
+
+If the `QUESTIONS` list is empty, the page should not display an empty table.
+
+### Solution
+
+A Jinja2 conditional statement was added:
+
+```html
+{% if questions %}
+```
+
+If the list contains data, the table is displayed.
+
+Otherwise, the page displays:
+
+```html
+<p>No questions available.</p>
+```
+
+### Learning
+
+I learned that Jinja2 conditional statements can control what is rendered on the page depending on whether data exists.
+
+---
+
+### Problem 3: Understanding the difference between `QUESTIONS`, `questions`, and `question`
+
+At first, it was confusing that the Python code used `QUESTIONS`, while the HTML template used `questions` and `question`.
+
+### Solution
+
+The relationship became clear after understanding how `render_template()` passes variables:
+
+```python
+questions=QUESTIONS
+```
+
+* `QUESTIONS` is the Python variable that stores all question data.
+* `questions` is the variable name available inside the HTML template.
+* `question` represents one individual question during each iteration of the Jinja2 `for` loop.
+
+### Learning
+
+I learned that Flask does not automatically expose Python variables to HTML templates.
+
+The backend variable must first be passed into `render_template()`, and the template can then iterate through it using a Jinja2 loop.
+
+## Testing Record
+
+### Test 1: Display question table
+
+Result:
+
+The page successfully displayed multiple questions in a table, including Question, Actions, Status, Version, Created by, Comments, and the remaining fields.
+
+Status: Passed
+
+### Test 2: Display message when no questions exist
+
+Action:
+
+```python
+QUESTIONS = []
+```
+
+Result:
+
+The page displayed:
+
+```text
+No questions available.
+```
+
+Status: Passed
+
+## Summary
+
+Today I completed the third stage of the prototype by upgrading the question list page from a simple list to a structured table.
+
+During this stage, I learned:
+
+1. How Flask passes a Python list to an HTML template using `render_template()`.
+2. How Jinja2 uses `{% if %}` to conditionally display content.
+3. How Jinja2 uses `{% for %}` to iterate through multiple question records.
+4. The purpose of HTML table elements such as `<table>`, `<thead>`, `<tbody>`, `<tr>`, `<th>`, and `<td>`.
+5. That dictionary keys containing spaces or special characters must be accessed using `question["key"]`.
+6. That `href="#"` is a placeholder link used before the actual functionality is implemented.

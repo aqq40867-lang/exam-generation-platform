@@ -5,24 +5,52 @@ app.secret_key = 'your_secret_key'
 
 USER = {
     "teacher1": "123456",
-    "teacher2": "456789"
+    "teacher2": "456789",
+    "1": "1"
 }
 
 QUESTIONS = [
     {
-        "id": 1,
-        "title": "Python",
-        "content": "Explain what a variable is in Python."
+        "Question" : "A simple calculation",
+        "Actions" : "Edit",
+        "Status" : "Ready",
+        "Version" : "v1",
+        "Created by" : "Y Wei 27 June 2026, 21:40pm",
+        "Comments" : "0",
+        "Needs checking?" : "Unlikely",
+        "Facility index" : "100.00%",
+        "Discriminative efficiency" : "72.00%",
+        "Usage" : "1",
+        "Last used" : "Sunday, 25 June 2026, 21:40pm",
+        "Modify" : "Y Wei 27 June 2026, 21:40pm"
     },
     {
-        "id": 2,
-        "title": "SQL",
-        "content": "Write a SQL query to select all students."
+        "Question" : "Binary search",
+        "Actions" : "Edit",
+        "Status" : "Ready",
+        "Version" : "v1",
+        "Created by" : "Y Wei 27 June 2026, 21:40pm",
+        "Comments" : "0",
+        "Needs checking?" : "Unlikely",
+        "Facility index" : "100.00%",
+        "Discriminative efficiency" : "72.00%",
+        "Usage" : "1",
+        "Last used" : "Sunday, 25 June 2026, 21:40pm",
+        "Modify" : "Y Wei 27 June 2026, 21:40pm"
     },
     {
-        "id": 3,
-        "title": "Algorithms and Data Structures",
-        "content": "Explain what a linked list is."
+        "Question" : "Fibonacci",
+        "Actions" : "Edit",
+        "Status" : "Ready",
+        "Version" : "v1",
+        "Created by" : "Y Wei 27 June 2026, 21:40pm",
+        "Comments" : "0",
+        "Needs checking?" : "Unlikely",
+        "Facility index" : "100.00%",
+        "Discriminative efficiency" : "72.00%",
+        "Usage" : "1",
+        "Last used" : "Sunday, 25 June 2026, 21:40pm",
+        "Modify" : "Y Wei 27 June 2026, 21:40pm"
     }
 ]
 

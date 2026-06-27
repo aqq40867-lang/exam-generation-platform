@@ -65,54 +65,6 @@ password = wrongpassword
 session 被清除，页面返回 /login。
 状态：通过
 
-# Development Log 001 — Login Function
-
-## Date
-2026-06-26
-
-## Development Goal
-The first development goal was to build a basic login function for the exam question bank platform.
-
-The system should allow teacher users to enter a username and password. If the credentials are correct, the user should be redirected to the question bank page. If the credentials are incorrect, the user should remain on the login page and see an error message.
-
-The system should also prevent unauthenticated users from directly accessing the question list page.
-
-## Functional Requirements
-1. Display a login page with username and password input fields.
-2. Predefine two teacher accounts for the first prototype.
-3. Validate user input when the login form is submitted.
-4. Redirect valid users to the question bank page.
-5. Show an error message for invalid login attempts.
-6. Use Flask session to store login status.
-7. Redirect unauthenticated users back to the login page when they try to access the question list page.
-8. Provide a logout function to clear the session.
-
-## Technical Implementation
-This stage was implemented using Flask.
-
-The `/login` route handles both GET and POST requests. A GET request displays the login form, while a POST request receives the submitted username and password.
-
-Two test accounts were stored in a Python dictionary. This approach was chosen because the first prototype focuses on authentication flow rather than database design.
-
-Flask session was used to store the login state:
-
-- `session['logged_in'] = True`
-- `session['username'] = username`
-
-The `/questions` route checks whether the user is logged in before displaying the question bank page. If the session does not contain a valid login state, the system redirects the user back to `/login`.
-
-The `/logout` route clears the session and redirects the user to the login page.
-
-## Problems Encountered
-One issue occurred when redirecting the user after successful login.
-
-The code originally used:
-
-```python
-return redirect(url_for('question'))
-
-
-可以。你今天的进度可以写成下面这样，风格和你前面的 **Development Log 001** 保持一致。
 
 # 6.26 阶段 2：题库列表页面
 
@@ -305,185 +257,238 @@ Welcome, teacher1.
 session 被清除，页面返回 `/login`。
 状态：通过
 
-# Development Log 002 — Question List Page
+# 6.27 阶段 3：题库列表页面（表格版本）
 
-## Date
+## 目标
 
-2026-06-26
+在完成基础题库列表页面后，将题库页面改为表格形式展示，使其更接近实际考试系统的题库页面。
 
-## Development Goal
+本阶段继续使用 Python list 模拟题目数据，暂时不连接数据库，重点练习 Flask 向 HTML template 传递数据，以及 Jinja2 在页面中循环显示表格内容。
 
-The second development goal was to build a basic question list page after the login function was completed.
+## 功能需求
 
-After a teacher logs in successfully, the system should redirect the user to the `/questions` page and display a list of questions.
+1. 登录成功后进入 `/questions` 页面。
+2. 页面显示当前登录教师。
+3. 页面以表格形式显示题库。
+4. 每道题显示多个字段，包括：
+   - Question
+   - Actions
+   - Status
+   - Version
+   - Created by
+   - Comments
+   - Needs checking?
+   - Facility index
+   - Discriminative efficiency
+   - Usage
+   - Last used
+   - Modify
+5. 当没有题目时显示提示信息。
+6. 页面保留 Logout 链接。
 
-At this stage, no database is used. The question data is temporarily stored in a Python list for prototype testing.
+## 技术实现
 
-## Functional Requirements
-
-1. Redirect authenticated users to the question list page after login.
-2. Display the current logged-in username on the question page.
-3. Display a list of questions.
-4. Show each question’s id, title, and content.
-5. Prevent unauthenticated users from directly accessing `/questions`.
-6. Provide a logout link to clear the session.
-
-## Technical Implementation
-
-A temporary `QUESTIONS` list was created in `app.py`.
-
-Each question is stored as a Python dictionary with three fields:
-
-* `id`
-* `title`
-* `content`
-
-The `/questions` route checks the session before rendering the page. If the user is not logged in, the system redirects the user back to `/login`.
-
-If the user is logged in, Flask passes both the username and the question list to the template:
+在 `app.py` 中扩展了 `QUESTIONS` 数据结构，由简单的 `id/title/content` 修改为包含多个字段的 dictionary：
 
 ```python
-return render_template(
-    'question.html',
-    username=session.get('username'),
-    questions=QUESTIONS
-)
+QUESTIONS = [
+    {
+        "Question": "A simple calculation",
+        "Actions": "Edit",
+        "Status": "Ready",
+        "Version": "v1",
+        "Created by": "Y Wei 27 June 2026, 21:40pm",
+        "Comments": "0",
+        "Needs checking?": "Unlikely",
+        "Facility index": "100.00%",
+        "Discriminative efficiency": "72.00%",
+        "Usage": "1",
+        "Last used": "Sunday, 25 June 2026, 21:40pm",
+        "Modify": "Y Wei 27 June 2026, 21:40pm"
+    }
+]
 ```
 
-The `question.html` template uses a Jinja2 for loop to display each question:
+```
+在 `question.html` 中，使用 HTML table 显示题库数据：
+
+页面中也加入了几个占位链接：
 
 ```html
-{% for question in questions %}
-    <li>
-        <strong>{{ question.id }}. {{ question.title }}</strong>
-        <p>{{ question.content }}</p>
-    </li>
-{% endfor %}
+<a href="#">Create New Question</a>
+<a href="#">Reset Columns</a>
+<a href="#">Show question test in the question list?</a>
 ```
 
-## Problems Encountered
+这里的 `href="#"` 表示 placeholder link，目前只是占位，后续再连接真实功能。
 
-### Problem 1: The question list was not displayed
+## 问题 1：部分字段无法正常显示
 
-The template contained a loop:
+原因：
 
-```html
-{% for question in questions %}
-```
-
-However, the backend did not initially pass the `questions` variable into the template.
-
-The original route only passed the username:
+有些 dictionary 的 key 中包含空格或特殊字符，例如：
 
 ```python
-return render_template('question.html', username=session.get('username'))
+"Created by"
+"Needs checking?"
+"Facility index"
+"Discriminative efficiency"
+"Last used"
 ```
 
-As a result, the HTML page did not receive the question data, so the list could not be displayed.
+如果直接写成：
 
-### Solution
+```html
+{{ question.Created by }}
+```
 
-The `questions=QUESTIONS` argument was added to `render_template()`:
+Jinja2 无法正确解析。
+
+解决方法：
+
+改用 dictionary key 的写法：
+
+```html
+{{ question["Created by"] }}
+{{ question["Needs checking?"] }}
+{{ question["Facility index"] }}
+{{ question["Discriminative efficiency"] }}
+{{ question["Last used"] }}
+```
+
+学习：
+
+我理解了 Jinja2 访问 dictionary 数据有两种方式。
+
+普通 key 可以写：
+
+```html
+{{ question.Question }}
+```
+
+但如果 key 中有空格或特殊符号，就要写：
+
+```html
+{{ question["Created by"] }}
+```
+
+## 问题 2：页面需要根据是否有题目决定显示内容
+
+原因：
+
+如果 `QUESTIONS` 为空，页面不应该显示空表格，而应该提示当前没有题目。
+
+解决方法：
+
+使用 Jinja2 的条件判断：
+
+```html
+{% if questions %}
+```
+
+有数据时显示表格，没有数据时显示：
+
+```html
+<p>No questions available.</p>
+```
+
+学习：
+
+我理解了 Jinja2 可以用 `{% if %}` 判断后端传来的数据是否为空，从而控制页面显示内容。
+
+## 问题 3：`QUESTIONS` 和 `questions` 的区别
+
+原因：
+
+在 `app.py` 中，后端数据叫：
 
 ```python
-return render_template(
-    'question.html',
-    username=session.get('username'),
-    questions=QUESTIONS
-)
+QUESTIONS
 ```
 
-### Learning
-
-I learned that Flask templates cannot automatically access Python variables from `app.py`.
-
-Data must be explicitly passed from the route function to the HTML template using `render_template()`.
-
----
-
-### Problem 2: Only id and title were displayed, but content was missing
-
-The reason was that the HTML template only contained:
+但在 HTML 中使用的是：
 
 ```html
-{{ question.id }}. {{ question.title }}
+questions
 ```
 
-Therefore, only the id and title were shown.
+一开始容易混淆为什么 Python 里是大写，HTML 里是小写。
 
-### Solution
+解决方法：
 
-The content field was added to the template:
+理解 `render_template()` 中的传参关系：
+
+```python
+questions=QUESTIONS
+```
+
+左边的 `questions` 是传给 HTML 使用的名字。
+
+右边的 `QUESTIONS` 是 Python 里真实的数据变量。
+
+学习：
+
+我理解了：
+
+```python
+QUESTIONS
+```
+
+是后端 Python 中的变量名；
 
 ```html
-<p>{{ question.content }}</p>
+questions
 ```
 
-### Learning
+是传到 HTML template 后使用的变量名；
 
-I learned that a template only displays the fields that are explicitly written in the HTML.
+```html
+question
+```
 
-Even if the Python dictionary contains more fields, they will not appear on the page unless they are referenced in the template.
+是 `{% for question in questions %}` 循环中临时表示每一道题的数据。
 
-## Testing Record
+## 测试记录
 
-### Test 1: Successful login and redirect
+### 测试 1：显示题库表格
 
-Input:
+结果：
+
+页面正确显示多道题目，并展示 Question、Actions、Status、Version、Created by、Comments 等多个字段。
+
+状态：通过
+
+### 测试 2：没有题目时显示提示
+
+操作：
+
+将：
+
+```python
+QUESTIONS = []
+```
+
+结果：
+
+页面显示：
 
 ```text
-username = teacher1
-password = 123456
+No questions available.
 ```
 
-Result:
-The user was successfully redirected to `/questions`.
+状态：通过
 
-Status: Passed
+## 今日学习总结
 
-### Test 2: Display username
+今天完成了题库列表页面的表格展示版本。
 
-Result:
-The question page displayed the logged-in username.
+相比之前简单显示 `id/title/content`，今天的页面更接近真实考试系统中的题库管理页面。
 
-Status: Passed
+我主要理解了：
 
-### Test 3: Display question list
-
-Result:
-The page displayed multiple questions with id, title, and content.
-
-Status: Passed
-
-### Test 4: Protect question page
-
-Action:
-Accessed `/questions` without logging in.
-
-Result:
-The system redirected the user back to `/login`.
-
-Status: Passed
-
-### Test 5: Logout
-
-Action:
-Clicked the Logout link.
-
-Result:
-The session was cleared and the user returned to `/login`.
-
-Status: Passed
-
-## Summary
-
-Today I completed the second stage of the prototype: the question list page.
-
-I learned how Flask passes data from the backend to the frontend template, how Jinja2 loops through a list, and why each displayed field must be written explicitly in the HTML template.
-
-The current system now supports:
-
-1. Login
-2. Session-based access control
-3. Logout
-4. Displaying a basic question list after login
+1. Flask 后端如何通过 `render_template()` 把 Python list 传给 HTML。
+2. Jinja2 如何使用 `{% if %}` 判断是否有数据。
+3. Jinja2 如何使用 `{% for %}` 循环显示多条题目。
+4. HTML 表格中 `<table>`、`<thead>`、`<tbody>`、`<tr>`、`<th>`、`<td>` 的作用。
+5. dictionary key 如果包含空格或特殊字符，需要使用 `question["key"]` 的方式访问。
+6. `href="#"` 是 placeholder link，表示功能暂时占位。

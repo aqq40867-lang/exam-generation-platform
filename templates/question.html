@@ -4,20 +4,60 @@
     <title>Question List</title>
 </head>
 <body>
-    <h1>Question Bank</h1>
-
     <p>Welcome, {{ username }}.</p>
 
-    <h2>Questions</h2>
+    <!-- placeholder -->
+    <a href="#">Create New Question</a> 
+    <a href="#">Reset Columns</a>
+    <a href="#">Show question test in the question list?</a>
 
-    <ul>
-        {% for question in questions %}
-            <li>
-                <strong>{{ question.id }}. {{ question.title }}</strong>
-                <p>{{ question.content }}</p>
-            </li>
-        {% endfor %}
-    </ul>
+
+    {% if questions %}
+        <table border="1" cellpadding="8">
+            <thead>
+                <!-- table row -->
+                <tr>
+                    <!-- table header -->
+                    <th>Question</th>
+                    <th>Actions</th>
+                    <th>Status</th>
+                    <th>Version</th>
+                    <th>Created by</th>
+                    <th>Comments</th>
+                    <th>Needs checking?</th>
+                    <th>Facility index</th>
+                    <th>Discriminative efficiency</th>
+                    <th>Usage</th>
+                    <th>Last used</th>
+                    <th>Modify</th>
+                </tr>
+            </thead>
+
+            <tbody>
+                {% for question in questions %}
+                    <tr>
+                        <!-- table data -->
+                        <td>{{ question.Question }}</td>
+                        <td>{{ question.Actions }}</td>
+                        <td>{{ question.Status }}</td>
+                        <td>{{ question.Version }}</td>
+                        <td>{{ question["Created by"] }}</td>
+                        <td>{{ question.Comments }}</td>
+                        <td>{{ question["Needs checking?"] }}</td>
+                        <td>{{ question["Facility index"] }}</td>
+                        <td>{{ question["Discriminative efficiency"] }}</td>
+                        <td>{{ question.Usage }}</td>
+                        <td>{{ question["Last used"] }}</td>
+                        <td>{{ question.Modify }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>No questions available.</p>
+    {% endif %} 
+    
+    <br>
 
     <a href="{{ url_for('logout') }}">Logout</a>
 </body>
