@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Create New Question</title>
+</head>
+<body>
+    <h1>Create New Question</h1>
+
+    <form method="POST">
+        <label>Question title</label><br>
+        <input type="text" name="title" required><br><br>
+
+        <label>Main question text</label><br>
+        <textarea name="main_text" required></textarea><br><br>
+
+        <!-- <label>Page size</label><br>
+        <select name="page_size">
+            <option value="Small">Small</option>
+            <option value="Medium">Medium</option>
+            <option value="Large">Large</option>
+        </select><br><br> -->
+
+        <button type="submit">Save</button>
+    </form>
+
+    <br>
+    <a href="{{ url_for('question_list') }}">Back to Question List</a>
+</body>
+</html>

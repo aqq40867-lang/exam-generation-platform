@@ -418,3 +418,291 @@ During this stage, I learned:
 4. The purpose of HTML table elements such as `<table>`, `<thead>`, `<tbody>`, `<tr>`, `<th>`, and `<td>`.
 5. That dictionary keys containing spaces or special characters must be accessed using `question["key"]`.
 6. That `href="#"` is a placeholder link used before the actual functionality is implemented.
+
+# 6.28 Stage 4: Create Question Page
+
+## Objective
+
+Implement the **Create Question** feature based on the existing Question List page.
+
+After clicking **Create New Question**, users can open a form, enter question information, and save it.
+
+Once the question is saved, the system writes the new question to `questions.json` and redirects the user back to the Question List page.
+
+---
+
+## Functional Requirements
+
+1. Provide a **Create New Question** link on the Question List page.
+2. Navigate to `/questions/new` after clicking the link.
+3. Display a question creation form.
+4. The form includes:
+
+   * Question Title
+   * Main Question Text
+5. Read `questions.json` when the user clicks **Save**.
+6. Add the new question to the question bank.
+7. Save the updated data back to `questions.json`.
+8. Redirect to the Question List page after saving.
+
+---
+
+## Technical Implementation
+
+At this stage, the project starts using `questions.json` to store question data instead of relying on a hard-coded Python list.
+
+Import the JSON module in `app.py`:
+
+```python
+import json
+```
+
+Define the question file:
+
+```python
+QUESTIONS_FILE = "questions.json"
+```
+
+Create a function to load question data:
+
+```python
+def load_questions():
+    with open(QUESTIONS_FILE, "r", encoding="utf-8") as file:
+        return json.load(file)
+```
+
+Create a function to save question data:
+
+```python
+def save_questions(questions):
+    with open(QUESTIONS_FILE, "w", encoding="utf-8") as file:
+        json.dump(questions, file, indent=4, ensure_ascii=False)
+```
+
+Add a new route for creating questions:
+
+```python
+@app.route("/questions/new", methods=["GET", "POST"])
+def create_question():
+```
+
+A **GET** request displays the Create Question page.
+
+A **POST** request performs the following steps:
+
+1. Read `questions.json`.
+2. Create a new question dictionary.
+3. Append the new question to the question list.
+4. Save the updated JSON file.
+5. Redirect to the Question List page.
+
+The Create Question page uses an HTML form:
+
+```html
+<form method="POST">
+```
+
+The form submits user input to the Flask backend.
+
+---
+
+## Issue 1: Why change `questions=QUESTIONS`?
+
+### Cause
+
+Previously, the question data was stored in a hard-coded Python list:
+
+```python
+QUESTIONS
+```
+
+After implementing the Create Question feature, newly created questions are saved to:
+
+```text
+questions.json
+```
+
+If the Question List page still uses:
+
+```python
+questions=QUESTIONS
+```
+
+the page will always display the old hard-coded data, and newly created questions will never appear.
+
+### Learning
+
+I learned that there are now two different data sources.
+
+`QUESTIONS` is a static Python list, while `questions.json` stores the latest question data.
+
+To display the newest questions, the Question List page should load data from `questions.json` instead of the original Python list.
+
+---
+
+## Issue 2: The saved data structure did not match the Question List
+
+### Cause
+
+Initially, the Create Question page saved data like this:
+
+```python
+{
+    "title": "...",
+    "main_text": "...",
+    "page_size": "..."
+}
+```
+
+However, the Question List page expected fields such as:
+
+```html
+{{ question.Question }}
+{{ question.Actions }}
+{{ question.Status }}
+```
+
+Because the field names were different, the saved questions could not be displayed correctly.
+
+### Solution
+
+Update the saved data structure to match the table:
+
+```python
+new_question = {
+    "Question": request.form["title"],
+    "Actions": "Edit",
+    "Status": "Ready",
+    "Version": "v1",
+    "Created by": session["username"],
+    "Comments": "0",
+    "Needs checking?": "Unlikely",
+    "Facility index": "100.00%",
+    "Discriminative efficiency": "72.00%",
+    "Usage": "0",
+    "Last used": "Never",
+    "Modify": session["username"]
+}
+```
+
+### Learning
+
+I learned that the backend data structure must match the fields expected by the frontend template.
+
+If the HTML template reads:
+
+```html
+{{ question.Question }}
+```
+
+then the JSON file must also contain the field:
+
+```json
+"Question": "..."
+```
+
+Otherwise, the data cannot be displayed correctly.
+
+---
+
+## Test Results
+
+### Test 1: Open the Create Question page
+
+**Action**
+
+Click **Create New Question**.
+
+**Result**
+
+The browser successfully navigates to:
+
+```text
+/questions/new
+```
+
+**Status**
+
+Passed
+
+---
+
+### Test 2: Display the Create Question form
+
+**Result**
+
+The page displays:
+
+* Question Title
+* Main Question Text
+
+**Status**
+
+Passed
+
+---
+
+### Test 3: Save a new question
+
+**Action**
+
+Fill in the form and click **Save**.
+
+**Result**
+
+The new question is successfully added to:
+
+```text
+questions.json
+```
+
+**Status**
+
+Passed
+
+---
+
+### Test 4: Redirect after saving
+
+**Result**
+
+After saving, the system automatically redirects to:
+
+```text
+/questions
+```
+
+**Status**
+
+Passed
+
+---
+
+### Test 5: Display the new question
+
+**Result**
+
+The newly created question appears in the Question List.
+
+**Status**
+
+Passed
+
+---
+
+## Learning Summary
+
+Today I completed the basic Create Question feature and started using `questions.json` to store question data, providing simple data persistence for the application.
+
+Compared with the previous implementation that used a fixed Python list, the system can now save user input dynamically and display newly created questions in the Question List.
+
+Today I learned:
+
+1. **GET** requests are used to display a page, while **POST** requests are used to submit form data.
+2. Flask uses `request.form` to retrieve data submitted from an HTML form.
+3. `json.load()` reads data from a JSON file.
+4. `json.dump()` writes Python data back to a JSON file.
+5. `questions.append(new_question)` adds a new question to the question bank.
+6. `url_for()` generates URLs based on Flask route function names.
+7. The Question List page should load data from `questions.json` instead of a hard-coded Python list.
+8. The data structure saved by the backend must match the fields expected by the frontend template.

@@ -1,3 +1,4 @@
+import json
 from flask import Flask, render_template, request, redirect, url_for, session
 app = Flask(__name__)
 
@@ -8,56 +9,23 @@ USER = {
     "teacher2": "456789",
     "1": "1"
 }
+QUESTIONS_FILE = "questions.json"
 
-QUESTIONS = [
-    {
-        "Question" : "A simple calculation",
-        "Actions" : "Edit",
-        "Status" : "Ready",
-        "Version" : "v1",
-        "Created by" : "Y Wei 27 June 2026, 21:40pm",
-        "Comments" : "0",
-        "Needs checking?" : "Unlikely",
-        "Facility index" : "100.00%",
-        "Discriminative efficiency" : "72.00%",
-        "Usage" : "1",
-        "Last used" : "Sunday, 25 June 2026, 21:40pm",
-        "Modify" : "Y Wei 27 June 2026, 21:40pm"
-    },
-    {
-        "Question" : "Binary search",
-        "Actions" : "Edit",
-        "Status" : "Ready",
-        "Version" : "v1",
-        "Created by" : "Y Wei 27 June 2026, 21:40pm",
-        "Comments" : "0",
-        "Needs checking?" : "Unlikely",
-        "Facility index" : "100.00%",
-        "Discriminative efficiency" : "72.00%",
-        "Usage" : "1",
-        "Last used" : "Sunday, 25 June 2026, 21:40pm",
-        "Modify" : "Y Wei 27 June 2026, 21:40pm"
-    },
-    {
-        "Question" : "Fibonacci",
-        "Actions" : "Edit",
-        "Status" : "Ready",
-        "Version" : "v1",
-        "Created by" : "Y Wei 27 June 2026, 21:40pm",
-        "Comments" : "0",
-        "Needs checking?" : "Unlikely",
-        "Facility index" : "100.00%",
-        "Discriminative efficiency" : "72.00%",
-        "Usage" : "1",
-        "Last used" : "Sunday, 25 June 2026, 21:40pm",
-        "Modify" : "Y Wei 27 June 2026, 21:40pm"
-    }
-]
+def load_questions():
+    with open(QUESTIONS_FILE, "r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def save_questions(questions):
+    with open(QUESTIONS_FILE, "w", encoding="utf-8") as file:
+        json.dump(questions, file, indent=4, ensure_ascii=False)
+
 
 @app.route('/')
 def home():
     return redirect(url_for('login'))
 
+# login
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     error = None
@@ -78,7 +46,41 @@ def login():
 def question_list():
     if not session.get('logged_in'):
         return redirect(url_for('login'))
-    return render_template('question.html', username=session.get('username'), questions=QUESTIONS)
+    
+    questions = load_questions()
+
+    return render_template('question.html', questions=questions, username=session.get('username'))
+
+# create questions
+@app.route("/questions/new", methods=["GET", "POST"])
+def create_question():
+    if "username" not in session:
+        return redirect(url_for("login"))
+
+    if request.method == "POST":
+        questions = load_questions()
+
+        new_question = {
+            "Question": request.form["title"],
+            "Actions": "Edit",
+            "Status": "Ready",
+            "Version": "v1",
+            "Created by": session["username"],
+            "Comments": "0",
+            "Needs checking?": "Unlikely",
+            "Facility index": "100.00%",
+            "Discriminative efficiency": "72.00%",
+            "Usage": "0",
+            "Last used": "Never",
+            "Modify": session["username"]
+        }
+
+        questions.append(new_question)
+        save_questions(questions)
+
+        return redirect(url_for("question_list"))
+
+    return render_template("create_question.html")
 
 @app.route('/logout')
 def logout():

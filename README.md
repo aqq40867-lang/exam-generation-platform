@@ -492,3 +492,270 @@ No questions available.
 4. HTML 表格中 `<table>`、`<thead>`、`<tbody>`、`<tr>`、`<th>`、`<td>` 的作用。
 5. dictionary key 如果包含空格或特殊字符，需要使用 `question["key"]` 的方式访问。
 6. `href="#"` 是 placeholder link，表示功能暂时占位。
+
+# 6.28 阶段 4：创建题目页面
+
+## 目标
+
+在题库列表页面基础上，实现创建题目功能。
+
+用户点击 `Create New Question` 后，可以进入创建题目页面，填写题目信息并保存。
+
+保存后，系统将新题目写入 `questions.json`，然后跳转回题库列表页面。
+
+---
+
+## 功能需求
+
+1. 题库列表页面提供 `Create New Question` 链接。
+2. 点击后进入 `/questions/new` 页面。
+3. 创建页面显示题目表单。
+4. 表单包含：
+   - Question title
+   - Main question text
+5. 点击 Save 后读取 `questions.json`。
+6. 将新题目加入题库。
+7. 保存更新后的 `questions.json`。
+8. 返回题库列表页面。
+
+---
+
+## 技术实现
+
+本阶段开始使用 `questions.json` 保存题库数据，实现简单的数据持久化。
+
+在 `app.py` 中新增：
+
+```python
+import json
+```
+
+定义题库文件：
+
+```python
+QUESTIONS_FILE = "questions.json"
+```
+
+创建读取 JSON 的函数：
+
+```python
+def load_questions():
+    with open(QUESTIONS_FILE, "r", encoding="utf-8") as file:
+        return json.load(file)
+```
+
+创建保存 JSON 的函数：
+
+```python
+def save_questions(questions):
+    with open(QUESTIONS_FILE, "w", encoding="utf-8") as file:
+        json.dump(questions, file, indent=4, ensure_ascii=False)
+```
+
+新增创建题目路由：
+
+```python
+@app.route("/questions/new", methods=["GET", "POST"])
+def create_question():
+```
+
+GET 请求用于显示创建页面。
+
+POST 请求用于：
+
+1. 读取 `questions.json`
+2. 创建新的题目 dictionary
+3. 加入题库
+4. 保存 JSON
+5. 返回题库列表页面
+
+创建页面使用 HTML `<form>` 收集数据，并通过：
+
+```html
+<form method="POST">
+```
+
+提交给 Flask。
+
+---
+
+## 问题 1：为什么 `questions=QUESTIONS` 要修改
+
+### 原因
+
+之前：
+
+```python
+QUESTIONS
+```
+
+保存的是 Python 中写死的数据。
+
+现在新增题目已经保存到：
+
+```text
+questions.json
+```
+
+如果继续：
+
+```python
+questions=QUESTIONS
+```
+
+页面始终显示旧数据，新创建的题目不会显示。
+
+---
+
+## 问题 2：创建页面保存的数据结构和题库列表不一致
+
+### 原因
+
+创建页面最开始保存的是：
+
+```python
+{
+    "title": "...",
+    "main_text": "...",
+    "page_size": "..."
+}
+```
+
+但是题库页面读取的是：
+
+```html
+{{ question.Question }}
+{{ question.Actions }}
+{{ question.Status }}
+```
+
+字段名称不一致，因此无法正常显示。
+
+### 解决方法
+
+修改保存的数据结构：
+
+```python
+new_question = {
+    "Question": request.form["title"],
+    "Actions": "Edit",
+    "Status": "Ready",
+    "Version": "v1",
+    "Created by": session["username"],
+    "Comments": "0",
+    "Needs checking?": "Unlikely",
+    "Facility index": "100.00%",
+    "Discriminative efficiency": "72.00%",
+    "Usage": "0",
+    "Last used": "Never",
+    "Modify": session["username"]
+}
+```
+
+### 学习
+
+我理解了：
+
+HTML 读取什么字段，
+
+JSON 就必须保存什么字段。
+
+前后端的数据结构必须保持一致。
+
+---
+
+## 测试记录
+
+### 测试 1：进入创建页面
+
+操作：
+
+点击：
+
+```
+Create New Question
+```
+
+结果：
+
+成功进入：
+
+```
+/questions/new
+```
+
+状态：通过
+
+---
+
+### 测试 2：显示创建表单
+
+结果：
+
+页面显示：
+
+- Question title
+- Main question text
+
+状态：通过
+
+---
+
+### 测试 3：保存题目
+
+操作：
+
+填写表单并点击 Save。
+
+结果：
+
+系统成功将题目加入：
+
+```
+questions.json
+```
+
+状态：通过
+
+---
+
+### 测试 4：返回题库页面
+
+结果：
+
+保存成功后自动跳转：
+
+```
+/questions
+```
+
+状态：通过
+
+---
+
+### 测试 5：显示新题目
+
+结果：
+
+新创建的题目成功显示在题库列表中。
+
+状态：通过
+
+---
+
+## 今日学习总结
+
+今天完成了创建题目页面的开发，并开始使用 `questions.json` 保存题库数据，实现了简单的数据持久化。
+
+相比之前使用 Python list 保存固定数据，现在系统已经能够根据用户输入动态新增题目，并在页面中显示最新数据。
+
+今天主要理解了：
+
+1. GET 请求用于显示页面，POST 请求用于提交表单。
+2. Flask 使用 `request.form` 获取用户输入的数据。
+3. 使用 `json.load()` 读取 JSON 文件。
+4. 使用 `json.dump()` 保存 Python 数据到 JSON 文件。
+5. `questions.append(new_question)` 用于向题库中新增一条记录。
+6. `url_for()` 根据路由函数名生成页面跳转地址。
+7. Flask 页面展示的数据应该从 JSON 文件读取，而不是继续使用写死的 Python list。
+8. 前端页面读取的数据字段必须与后端保存的数据结构保持一致。
