@@ -61,11 +61,15 @@ def create_question():
         questions = load_questions()
 
         new_question = {
+            "id": len(questions) + 1,
             "Question": request.form["title"],
+            "Marks": request.form["marks"],
+            "Answer": request.form["answer"],
             "Actions": "Edit",
             "Status": "Ready",
             "Version": "v1",
             "Created by": session["username"],
+            "Created at": datatime.now().strftime("%Y-%m-%d %H:%M"),
             "Comments": "0",
             "Needs checking?": "Unlikely",
             "Facility index": "100.00%",

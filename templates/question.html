@@ -6,21 +6,17 @@
 <body>
     <p>Welcome, {{ username }}.</p>
 
-    <!-- placeholder -->
     <a href="{{ url_for('create_question') }}">
-    <button>Create New Question</button>
-</a>
- 
-    <a href="#">Reset Columns</a>
-    <a href="#">Show question test in the question list?</a>
+        <button>Create New Question</button>
+    </a>
 
+    <a href="#">Reset Columns</a>
+    <a href="#">Show question text in the question list?</a>
 
     {% if questions %}
         <table border="1" cellpadding="8">
             <thead>
-                <!-- table row -->
                 <tr>
-                    <!-- table header -->
                     <th>Question</th>
                     <th>Actions</th>
                     <th>Status</th>
@@ -39,9 +35,25 @@
             <tbody>
                 {% for question in questions %}
                     <tr>
-                        <!-- table data -->
-                        <td>{{ question.Question }}</td>
-                        <td>{{ question.Actions }}</td>
+                        <td>
+                            <a href="{{ url_for('question_detail', question_id=question.id) }}">
+                                {{ question.Question }}
+                            </a>
+                        </td>
+
+                        <td>
+                            <select>
+                                <option>Edit</option>
+                                <option>Preview</option>
+                                <option>Edit Question</option>
+                                <option>Duplicate</option>
+                                <option>Manage Tags</option>
+                                <option>Delete</option>
+                                <option>History</option>
+                                <option>Export As</option>
+                            </select>
+                        </td>
+
                         <td>{{ question.Status }}</td>
                         <td>{{ question.Version }}</td>
                         <td>{{ question["Created by"] }}</td>
@@ -58,8 +70,8 @@
         </table>
     {% else %}
         <p>No questions available.</p>
-    {% endif %} 
-    
+    {% endif %}
+
     <br>
 
     <a href="{{ url_for('logout') }}">Logout</a>
