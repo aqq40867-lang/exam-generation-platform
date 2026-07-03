@@ -635,22 +635,6 @@ questions=QUESTIONS
 
 修改保存的数据结构：
 
-```python
-new_question = {
-    "Question": request.form["title"],
-    "Actions": "Edit",
-    "Status": "Ready",
-    "Version": "v1",
-    "Created by": session["username"],
-    "Comments": "0",
-    "Needs checking?": "Unlikely",
-    "Facility index": "100.00%",
-    "Discriminative efficiency": "72.00%",
-    "Usage": "0",
-    "Last used": "Never",
-    "Modify": session["username"]
-}
-```
 
 ### 学习
 
@@ -759,3 +743,290 @@ questions.json
 6. `url_for()` 根据路由函数名生成页面跳转地址。
 7. Flask 页面展示的数据应该从 JSON 文件读取，而不是继续使用写死的 Python list。
 8. 前端页面读取的数据字段必须与后端保存的数据结构保持一致。
+
+# 7.3 阶段 5：Question Detail 页面
+
+## 目标
+
+在创建题目功能完成后，实现 Question Detail 页面。
+
+用户点击题库列表中的题目名称后，可以进入题目详情页面，查看完整题目信息，为后续 Edit、Preview、History 等功能做准备。
+
+---
+
+## 功能需求
+
+1. 点击题目名称进入 Question Detail 页面。
+2. 根据 question_id 找到对应题目。
+3. 页面显示：
+   - Question
+   - Main Question
+   - Marks
+   - Answer
+   - Created by
+   - Created at
+4. 页面提供返回 Question List 按钮。
+
+---
+
+## 技术实现
+
+新增路由：
+
+```python
+@app.route("/questions/<int:question_id>")
+def question_detail(question_id):
+```
+
+进入详情页面时：
+
+1. 判断用户是否登录。
+2. 读取 `questions.json`。
+3. 根据 `question_id` 查找对应题目。
+4. 找到后传递给：
+
+```python
+render_template("question_detail.html")
+```
+
+页面显示题目详细信息。
+
+---
+
+Question List 页面中，将题目名称修改为：
+
+```html
+<a href="{{ url_for('question_detail', question_id=question['id']) }}">
+    {{ question["Question"] }}
+</a>
+```
+
+实现点击题目名称即可进入详情页面。
+
+---
+
+## 问题 1：BuildError：Could not build url for endpoint 'question_detail'
+
+### 原因
+
+页面调用了：
+
+```python
+url_for("question_detail")
+```
+
+但是 `app.py` 中还没有对应的路由。
+
+### 解决方法
+
+新增：
+
+```python
+@app.route("/questions/<int:question_id>")
+def question_detail(question_id):
+```
+
+### 学习
+
+我理解了：
+
+`url_for()` 只能跳转已经存在的 Flask endpoint。
+
+如果路由不存在，页面在渲染时就会报 `BuildError`。
+
+---
+
+## 问题 2：NameError：datatime is not defined
+
+### 原因
+
+创建题目时写成：
+
+```python
+datatime.now()
+```
+
+实际上正确名称是：
+
+```python
+datetime
+```
+
+### 解决方法
+
+导入：
+
+```python
+from datetime import datetime
+```
+
+修改为：
+
+```python
+datetime.now().strftime("%Y-%m-%d %H:%M")
+```
+
+### 学习
+
+我理解了：
+
+Python 中 `datetime` 既是模块也是类，拼写错误会导致 `NameError`。
+
+---
+
+## 问题 3：NameError：json is not defined
+
+### 原因
+
+使用：
+
+```python
+json.load()
+```
+
+但是没有：
+
+```python
+import json
+```
+
+### 解决方法
+
+在文件顶部加入：
+
+```python
+import json
+```
+
+### 学习
+
+Python 使用模块之前必须先 import，否则解释器无法识别对应名称。
+
+---
+
+## 问题 4：UndefinedError：'dict object' has no attribute 'id'
+
+### 原因
+
+模板中使用：
+
+```html
+question.id
+```
+
+但是 `question` 实际上是 dictionary。
+
+另外，旧数据中部分题目没有：
+
+```python
+"id"
+```
+
+字段。
+
+### 解决方法
+
+模板统一改为：
+
+```html
+question["id"]
+```
+
+同时在读取 JSON 时检查旧数据：
+
+```python
+for index, question in enumerate(questions):
+    if "id" not in question:
+        question["id"] = index + 1
+```
+
+自动补充旧数据中的 id。
+
+### 学习
+
+我理解了：
+
+Jinja2 可以访问 dictionary，但推荐统一使用：
+
+```html
+question["id"]
+question["Question"]
+```
+
+这种方式更加稳定。
+
+---
+
+## 测试记录
+
+### 测试 1：进入 Question List
+
+结果：
+
+登录成功后正常进入题库页面。
+
+状态：通过
+
+---
+
+### 测试 2：点击题目名称
+
+结果：
+
+成功进入 Question Detail 页面。
+
+状态：通过
+
+---
+
+### 测试 3：显示题目详细信息
+
+结果：
+
+页面正确显示：
+
+- Question
+- Main Question
+- Marks
+- Answer
+- Created by
+- Created at
+
+状态：通过
+
+---
+
+### 测试 4：返回 Question List
+
+操作：
+
+点击：
+
+```
+Back to Question List
+```
+
+结果：
+
+成功返回：
+
+```
+/questions
+```
+
+状态：通过
+
+---
+
+## 今日学习总结
+
+今天完成了 Question Detail 页面开发，实现了 Question List 到 Question Detail 的页面跳转。
+
+我主要理解了：
+
+1. Flask 如何通过 URL 参数传递 `question_id`。
+2. 如何根据 `question_id` 查找对应的数据。
+3. `url_for()` 必须对应已经存在的 Flask 路由。
+4. Jinja2 推荐使用 `question["key"]` 的方式访问 dictionary。
+5. `datetime` 和 `json` 模块需要正确导入才能使用。
+6. 为保证兼容旧数据，可以在读取 JSON 时自动补充缺失字段。

@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from flask import Flask, render_template, request, redirect, url_for, session
 app = Flask(__name__)
 
@@ -13,7 +14,15 @@ QUESTIONS_FILE = "questions.json"
 
 def load_questions():
     with open(QUESTIONS_FILE, "r", encoding="utf-8") as file:
-        return json.load(file)
+        questions = json.load(file)
+
+    for index, question in enumerate(questions):
+        if "id" not in question:
+            question["id"] = index + 1
+
+    save_questions(questions)
+
+    return questions
 
 
 def save_questions(questions):
@@ -49,7 +58,7 @@ def question_list():
     
     questions = load_questions()
 
-    return render_template('question.html', questions=questions, username=session.get('username'))
+    return render_template('question_list.html', questions=questions, username=session.get('username'))
 
 # create questions
 @app.route("/questions/new", methods=["GET", "POST"])
@@ -63,6 +72,7 @@ def create_question():
         new_question = {
             "id": len(questions) + 1,
             "Question": request.form["title"],
+            "Main question": request.form["main_text"],
             "Marks": request.form["marks"],
             "Answer": request.form["answer"],
             "Actions": "Edit",
@@ -85,6 +95,23 @@ def create_question():
         return redirect(url_for("question_list"))
 
     return render_template("create_question.html")
+
+# question detail
+@app.route("/questions/<int:question_id>")
+def question_detail(question_id):
+    if "username" not in session:
+        return redirect(url_for("login"))
+
+    questions = load_questions()
+
+    for question in questions:
+        if question["id"] == question_id:
+            return render_template(
+                "question_detail.html",
+                question=question
+            )
+
+    return "Question not found", 404
 
 @app.route('/logout')
 def logout():

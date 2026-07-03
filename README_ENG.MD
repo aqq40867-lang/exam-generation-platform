@@ -706,3 +706,272 @@ Today I learned:
 6. `url_for()` generates URLs based on Flask route function names.
 7. The Question List page should load data from `questions.json` instead of a hard-coded Python list.
 8. The data structure saved by the backend must match the fields expected by the frontend template.
+
+# 7.3 Stage 5: Question Detail Page
+
+## Objective
+
+After completing the Create Question feature, implement the Question Detail page.
+
+Users should be able to click a question title in the Question List and view the complete information for that question. This page will also serve as the foundation for future features such as Edit, Preview, and History.
+
+---
+
+## Functional Requirements
+
+1. Click a question title to open the Question Detail page.
+2. Find the corresponding question using `question_id`.
+3. Display the following information:
+   - Question
+   - Main Question
+   - Marks
+   - Answer
+   - Created by
+   - Created at
+4. Provide a **Back to Question List** button.
+
+---
+
+## Technical Implementation
+
+A new route was added to `app.py`:
+
+```python
+@app.route("/questions/<int:question_id>")
+def question_detail(question_id):
+```
+
+When a user opens the page, the application:
+
+1. Checks whether the user is logged in.
+2. Loads `questions.json`.
+3. Searches for the question using `question_id`.
+4. Passes the matched question to:
+
+```python
+render_template("question_detail.html")
+```
+
+The detail page displays all information about the selected question.
+
+---
+
+The Question List page was updated so that each question title becomes a hyperlink:
+
+```html
+<a href="{{ url_for('question_detail', question_id=question['id']) }}">
+    {{ question["Question"] }}
+</a>
+```
+
+This enables navigation from the Question List page to the Question Detail page.
+
+---
+
+## Issue 1: BuildError - Could not build url for endpoint 'question_detail'
+
+### Cause
+
+The template called:
+
+```python
+url_for("question_detail")
+```
+
+However, no corresponding route existed in `app.py`.
+
+### Solution
+
+Added the following route:
+
+```python
+@app.route("/questions/<int:question_id>")
+def question_detail(question_id):
+```
+
+### Learning
+
+I learned that `url_for()` can only generate URLs for existing Flask endpoints. If the endpoint does not exist, Flask raises a `BuildError` while rendering the template.
+
+---
+
+## Issue 2: NameError - datatime is not defined
+
+### Cause
+
+The code used:
+
+```python
+datatime.now()
+```
+
+instead of:
+
+```python
+datetime.now()
+```
+
+### Solution
+
+Imported the module correctly:
+
+```python
+from datetime import datetime
+```
+
+Then updated the code to:
+
+```python
+datetime.now().strftime("%Y-%m-%d %H:%M")
+```
+
+### Learning
+
+I learned that `datetime` is both a module and a class in Python. A spelling mistake results in a `NameError`.
+
+---
+
+## Issue 3: NameError - json is not defined
+
+### Cause
+
+The application used:
+
+```python
+json.load()
+```
+
+without importing the `json` module.
+
+### Solution
+
+Added:
+
+```python
+import json
+```
+
+at the beginning of `app.py`.
+
+### Learning
+
+Python modules must be imported before they can be used.
+
+---
+
+## Issue 4: UndefinedError - 'dict object' has no attribute 'id'
+
+### Cause
+
+The template accessed:
+
+```html
+question.id
+```
+
+However, `question` is a Python dictionary rather than an object.
+
+In addition, some existing records in `questions.json` did not contain an `"id"` field.
+
+### Solution
+
+Updated the template to use:
+
+```html
+question["id"]
+```
+
+Also updated `load_questions()` to automatically assign IDs to old records:
+
+```python
+for index, question in enumerate(questions):
+    if "id" not in question:
+        question["id"] = index + 1
+```
+
+### Learning
+
+I learned that dictionary values in Jinja2 are more reliably accessed using:
+
+```html
+question["id"]
+question["Question"]
+```
+
+instead of dot notation.
+
+---
+
+## Testing
+
+### Test 1: Open Question List
+
+**Result**
+
+Successfully displayed the Question List page after login.
+
+**Status:** Passed
+
+---
+
+### Test 2: Open Question Detail
+
+**Action**
+
+Click a question title.
+
+**Result**
+
+Successfully navigated to the Question Detail page.
+
+**Status:** Passed
+
+---
+
+### Test 3: Display Question Information
+
+**Result**
+
+The page correctly displayed:
+
+- Question
+- Main Question
+- Marks
+- Answer
+- Created by
+- Created at
+
+**Status:** Passed
+
+---
+
+### Test 4: Return to Question List
+
+**Action**
+
+Click **Back to Question List**.
+
+**Result**
+
+Successfully returned to:
+
+```
+/questions
+```
+
+**Status:** Passed
+
+---
+
+## Learning Summary
+
+Today I completed the Question Detail page and successfully connected the Question List page with the Question Detail page.
+
+Key concepts I learned include:
+
+1. How Flask passes URL parameters using `question_id`.
+2. How to retrieve a specific record from `questions.json`.
+3. How `url_for()` works with Flask routes.
+4. The recommended way to access dictionary values in Jinja2 using `question["key"]`.
+5. The importance of correctly importing Python modules such as `json` and `datetime`.
+6. How to maintain compatibility with older JSON data by automatically adding missing fields.
