@@ -975,3 +975,468 @@ Key concepts I learned include:
 4. The recommended way to access dictionary values in Jinja2 using `question["key"]`.
 5. The importance of correctly importing Python modules such as `json` and `datetime`.
 6. How to maintain compatibility with older JSON data by automatically adding missing fields.
+
+# 7.4 Stage 6: Question List Actions Dropdown Functionality
+
+## Objective
+
+In the Question List page, the Actions column was changed from a simple dropdown display into a functional action menu.
+
+In this stage, two real functions were implemented first:
+
+* Edit
+* Delete
+
+The other options are kept as placeholders for future features, including Preview, Duplicate, Manage Tags, History, and Export As.
+
+---
+
+## Functional Requirements
+
+1. Each question row in the Question List page should have an Actions dropdown menu.
+2. The dropdown menu should include:
+
+   * Edit
+   * Preview
+   * Duplicate
+   * Manage Tags
+   * Delete
+   * History
+   * Export As
+3. When the user selects Edit, the page should redirect to the edit page for the selected question.
+4. When the user selects Delete, a confirmation message should appear.
+5. After the user confirms the deletion, the selected question should be deleted.
+6. After deletion, the page should automatically return to the Question List page.
+7. Other features should temporarily display a message showing that the feature has not been implemented yet.
+
+---
+
+## Technical Implementation
+
+In `question_list.html`, the Actions column was changed to a `<select>` dropdown with an `onchange` event.
+
+```html
+<td>
+    <select onchange="handleAction(this, '{{ question.id }}')">
+        <option value="">Select Action</option>
+        <option value="edit">Edit</option>
+        <option value="preview">Preview</option>
+        <option value="duplicate">Duplicate</option>
+        <option value="manage_tags">Manage Tags</option>
+        <option value="delete">Delete</option>
+        <option value="history">History</option>
+        <option value="export">Export As</option>
+    </select>
+</td>
+```
+
+The following line:
+
+```html
+onchange="handleAction(this, '{{ question.id }}')"
+```
+
+means that when the user selects an action, the JavaScript function `handleAction()` will be called.
+
+`this` refers to the current dropdown menu.
+
+`question.id` refers to the id of the current question row.
+
+---
+
+JavaScript was added at the bottom of the page:
+
+```html
+<script>
+    function handleAction(selectElement, questionId) {
+        const action = selectElement.value;
+
+        if (action === "edit") {
+            window.location.href = "/questions/" + questionId + "/edit";
+        }
+
+        else if (action === "delete") {
+            const confirmDelete = confirm("Are you sure you want to delete this question?");
+
+            if (confirmDelete) {
+                const form = document.createElement("form");
+                form.method = "POST";
+                form.action = "/questions/" + questionId + "/delete";
+                document.body.appendChild(form);
+                form.submit();
+            }
+        }
+
+        else if (action === "preview") {
+            alert("Preview feature is not implemented yet.");
+        }
+
+        else if (action === "duplicate") {
+            alert("Duplicate feature is not implemented yet.");
+        }
+
+        else if (action === "manage_tags") {
+            alert("Manage Tags feature is not implemented yet.");
+        }
+
+        else if (action === "history") {
+            alert("History feature is not implemented yet.");
+        }
+
+        else if (action === "export") {
+            alert("Export feature is not implemented yet.");
+        }
+
+        selectElement.value = "";
+    }
+</script>
+```
+
+This code does the following:
+
+1. Gets the action selected by the user.
+2. If the action is `edit`, it redirects the user to the edit page.
+3. If the action is `delete`, it first shows a confirmation message.
+4. After the user confirms the deletion, JavaScript creates a POST form and submits the delete request.
+5. If the action is another feature, `alert()` is used as a temporary placeholder.
+6. After the action is completed, the dropdown menu is reset to its default state.
+
+---
+
+## Edit Feature Implementation
+
+A new route was added in `app.py` for editing a question:
+
+```python
+@app.route("/questions/<int:question_id>/edit", methods=["GET", "POST"])
+def edit_question(question_id):
+    if "username" not in session:
+        return redirect(url_for("login"))
+
+    questions = load_questions()
+
+    question = None
+    for q in questions:
+        if q["id"] == question_id:
+            question = q
+            break
+
+    if question is None:
+        return "Question not found", 404
+
+    if request.method == "POST":
+        question["Question"] = request.form["title"]
+        question["Main question"] = request.form["main_text"]
+        question["Marks"] = request.form["marks"]
+        question["Answer"] = request.form["answer"]
+
+        save_questions(questions)
+
+        return redirect(url_for("question_list"))
+
+    return render_template("edit_question.html", question=question)
+```
+
+The GET request is used to display the edit page.
+
+The POST request is used to save the updated question information.
+
+---
+
+A new `edit_question.html` page was created:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Edit Question</title>
+</head>
+<body>
+    <h1>Edit Question</h1>
+
+    <form method="POST">
+        <label>Question title</label><br>
+        <input type="text" name="title" value="{{ question.Question }}" required><br><br>
+
+        <label>Main question text</label><br>
+        <textarea name="main_text" required>{{ question["Main question"] }}</textarea><br><br>
+
+        <label>Marks</label><br>
+        <input type="number" name="marks" value="{{ question.Marks }}" required><br><br>
+
+        <label>Answer</label><br>
+        <textarea name="answer" required>{{ question.Answer }}</textarea><br><br>
+
+        <button type="submit">Save Changes</button>
+    </form>
+
+    <br>
+
+    <a href="{{ url_for('question_list') }}">Back to Question List</a>
+</body>
+</html>
+```
+
+This page reuses the form structure from the Create Question page, but it displays the existing question data in the input fields so that the user can edit it.
+
+---
+
+## Delete Feature Implementation
+
+A new route was added in `app.py` for deleting a question:
+
+```python
+@app.route("/questions/<int:question_id>/delete", methods=["POST"])
+def delete_question(question_id):
+    if "username" not in session:
+        return redirect(url_for("login"))
+
+    questions = load_questions()
+
+    updated_questions = []
+    for q in questions:
+        if q["id"] != question_id:
+            updated_questions.append(q)
+
+    save_questions(updated_questions)
+
+    return redirect(url_for("question_list"))
+```
+
+The delete logic works as follows:
+
+1. Read the data from `questions.json`.
+2. Loop through all questions.
+3. Keep only the questions whose id is not equal to the current `question_id`.
+4. Save the updated question list back to `questions.json`.
+5. Redirect back to the Question List page.
+
+---
+
+## Issue 1: Why Delete Should Not Use a Direct Link
+
+### Reason
+
+Deleting data changes server-side data, so it should not be done using a normal link:
+
+```html
+<a href="/questions/1/delete">Delete</a>
+```
+
+A normal link sends a GET request by default. GET is more suitable for viewing pages or retrieving data, not for deleting data.
+
+---
+
+### Solution
+
+The delete feature uses a POST request.
+
+Because a `<select>` dropdown cannot directly submit a POST request, JavaScript is used to create a temporary form:
+
+```javascript
+const form = document.createElement("form");
+form.method = "POST";
+form.action = "/questions/" + questionId + "/delete";
+document.body.appendChild(form);
+form.submit();
+```
+
+---
+
+### Learning
+
+I learned that:
+
+GET is usually used to fetch pages or data.
+
+POST is usually used to submit, update, or delete data.
+
+Using POST for deleting a question is safer and follows better web development practice.
+
+---
+
+## Issue 2: Other Actions Do Not Have Backend Logic Yet
+
+### Reason
+
+At this stage, only Edit and Delete have been implemented.
+
+Other features, such as:
+
+* Preview
+* Duplicate
+* Manage Tags
+* History
+* Export As
+
+do not have corresponding Flask routes or pages yet.
+
+---
+
+### Solution
+
+For now, `alert()` is used as a placeholder:
+
+```javascript
+alert("Preview feature is not implemented yet.");
+```
+
+This prevents the options from doing nothing and keeps the entry points for future features.
+
+---
+
+### Learning
+
+I learned that when developing a system, it is useful to build the full menu structure first and then implement each function step by step.
+
+Features that are not ready yet can be kept as placeholders, so the page structure does not need to be changed repeatedly.
+
+---
+
+## Testing Record
+
+### Test 1: Actions Dropdown Display
+
+Result:
+
+Each question row displays an Actions dropdown menu.
+
+The menu includes:
+
+* Edit
+* Preview
+* Duplicate
+* Manage Tags
+* Delete
+* History
+* Export As
+
+Status: Passed
+
+---
+
+### Test 2: Click Edit
+
+Action:
+
+Select Edit from the Actions dropdown menu for a question.
+
+Result:
+
+The page successfully redirects to the edit page for the selected question:
+
+```text
+/questions/<question_id>/edit
+```
+
+Status: Passed
+
+---
+
+### Test 3: Edit a Question and Save
+
+Action:
+
+Modify the question title, main question, marks, or answer, then click Save Changes.
+
+Result:
+
+The question information is successfully saved to `questions.json`.
+
+The page automatically returns to the Question List page.
+
+Status: Passed
+
+---
+
+### Test 4: Click Delete
+
+Action:
+
+Select Delete from the Actions dropdown menu for a question.
+
+Result:
+
+A confirmation message appears:
+
+```text
+Are you sure you want to delete this question?
+```
+
+Status: Passed
+
+---
+
+### Test 5: Confirm Deletion
+
+Action:
+
+Click OK in the confirmation message.
+
+Result:
+
+The selected question is deleted from `questions.json`.
+
+The page automatically returns to the Question List page.
+
+Status: Passed
+
+---
+
+### Test 6: Cancel Deletion
+
+Action:
+
+Click Cancel in the confirmation message.
+
+Result:
+
+The question is not deleted.
+
+The page remains normal.
+
+Status: Passed
+
+---
+
+### Test 7: Click Other Placeholder Features
+
+Action:
+
+Select Preview, Duplicate, Manage Tags, History, or Export As.
+
+Result:
+
+A message appears saying that the feature has not been implemented yet.
+
+Status: Passed
+
+---
+
+## Daily Learning Summary
+
+Today, I completed the functional improvement of the Actions dropdown menu on the Question List page.
+
+Compared with the previous version, where the dropdown only displayed options, the dropdown can now execute different actions based on the user’s selection.
+
+Today, I mainly learned that:
+
+1. `<select>` can use `onchange` to listen for user selections.
+2. The `value` inside `<option value="">` is the real value read by JavaScript.
+3. `window.location.href` can redirect the page to a specific URL.
+4. Delete operations should use POST requests instead of normal GET links.
+5. JavaScript can dynamically create a form and submit a POST request.
+6. Flask can use `/questions/<int:question_id>/edit` to edit a specific question.
+7. Flask can use `/questions/<int:question_id>/delete` to delete a specific question.
+8. Unfinished features can use `alert()` as placeholders and be completed later.
+9. The frontend Actions menu and backend Flask routes need to match each other, otherwise the action will not work.
+
+The system now has the basic question management functions:
+
+* View question list
+* View question details
+* Create question
+* Edit question
+* Delete question
+
+This means the core CRUD functionality of the Question Bank is now basically complete.

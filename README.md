@@ -1030,3 +1030,468 @@ Back to Question List
 4. Jinja2 推荐使用 `question["key"]` 的方式访问 dictionary。
 5. `datetime` 和 `json` 模块需要正确导入才能使用。
 6. 为保证兼容旧数据，可以在读取 JSON 时自动补充缺失字段。
+
+# 7.4 阶段 6：Question List Actions 下拉菜单功能
+
+## 目标
+
+在 Question List 页面中，将 Actions 列从普通下拉显示改为可以执行操作的功能菜单。
+
+本阶段先实现两个真实功能：
+
+* Edit
+* Delete
+
+其他功能先保留为占位功能，为后续 Preview、Duplicate、Manage Tags、History、Export As 等功能做准备。
+
+---
+
+## 功能需求
+
+1. Question List 页面每一行题目都有一个 Actions 下拉菜单。
+2. 下拉菜单包含：
+
+   * Edit
+   * Preview
+   * Duplicate
+   * Manage Tags
+   * Delete
+   * History
+   * Export As
+3. 用户选择 Edit 后，跳转到当前题目的编辑页面。
+4. 用户选择 Delete 后，弹出确认框。
+5. 用户确认删除后，系统删除当前题目。
+6. 删除后自动返回 Question List 页面。
+7. 其他功能暂时显示提示信息，表示功能还未实现。
+
+---
+
+## 技术实现
+
+在 `question_list.html` 中，将 Actions 列改为带有 `onchange` 事件的 `<select>` 下拉菜单。
+
+```html
+<td>
+    <select onchange="handleAction(this, '{{ question.id }}')">
+        <option value="">Select Action</option>
+        <option value="edit">Edit</option>
+        <option value="preview">Preview</option>
+        <option value="duplicate">Duplicate</option>
+        <option value="manage_tags">Manage Tags</option>
+        <option value="delete">Delete</option>
+        <option value="history">History</option>
+        <option value="export">Export As</option>
+    </select>
+</td>
+```
+
+其中：
+
+```html
+onchange="handleAction(this, '{{ question.id }}')"
+```
+
+表示当用户选择一个操作时，调用 JavaScript 函数 `handleAction()`。
+
+`this` 表示当前这个下拉菜单。
+
+`question.id` 表示当前这一行题目的 id。
+
+---
+
+在页面底部加入 JavaScript：
+
+```html
+<script>
+    function handleAction(selectElement, questionId) {
+        const action = selectElement.value;
+
+        if (action === "edit") {
+            window.location.href = "/questions/" + questionId + "/edit";
+        }
+
+        else if (action === "delete") {
+            const confirmDelete = confirm("Are you sure you want to delete this question?");
+
+            if (confirmDelete) {
+                const form = document.createElement("form");
+                form.method = "POST";
+                form.action = "/questions/" + questionId + "/delete";
+                document.body.appendChild(form);
+                form.submit();
+            }
+        }
+
+        else if (action === "preview") {
+            alert("Preview feature is not implemented yet.");
+        }
+
+        else if (action === "duplicate") {
+            alert("Duplicate feature is not implemented yet.");
+        }
+
+        else if (action === "manage_tags") {
+            alert("Manage Tags feature is not implemented yet.");
+        }
+
+        else if (action === "history") {
+            alert("History feature is not implemented yet.");
+        }
+
+        else if (action === "export") {
+            alert("Export feature is not implemented yet.");
+        }
+
+        selectElement.value = "";
+    }
+</script>
+```
+
+这段代码的作用是：
+
+1. 获取用户选择的 action。
+2. 如果 action 是 `edit`，跳转到编辑页面。
+3. 如果 action 是 `delete`，先弹出确认框。
+4. 用户确认后，通过 JavaScript 创建一个 POST 表单并提交删除请求。
+5. 如果 action 是其他功能，暂时使用 `alert()` 占位。
+6. 操作结束后，将下拉菜单恢复到默认状态。
+
+---
+
+## Edit 功能实现
+
+在 `app.py` 中新增编辑题目的路由：
+
+```python
+@app.route("/questions/<int:question_id>/edit", methods=["GET", "POST"])
+def edit_question(question_id):
+    if "username" not in session:
+        return redirect(url_for("login"))
+
+    questions = load_questions()
+
+    question = None
+    for q in questions:
+        if q["id"] == question_id:
+            question = q
+            break
+
+    if question is None:
+        return "Question not found", 404
+
+    if request.method == "POST":
+        question["Question"] = request.form["title"]
+        question["Main question"] = request.form["main_text"]
+        question["Marks"] = request.form["marks"]
+        question["Answer"] = request.form["answer"]
+
+        save_questions(questions)
+
+        return redirect(url_for("question_list"))
+
+    return render_template("edit_question.html", question=question)
+```
+
+GET 请求用于显示编辑页面。
+
+POST 请求用于保存修改后的题目信息。
+
+---
+
+新增 `edit_question.html` 页面：
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Edit Question</title>
+</head>
+<body>
+    <h1>Edit Question</h1>
+
+    <form method="POST">
+        <label>Question title</label><br>
+        <input type="text" name="title" value="{{ question.Question }}" required><br><br>
+
+        <label>Main question text</label><br>
+        <textarea name="main_text" required>{{ question["Main question"] }}</textarea><br><br>
+
+        <label>Marks</label><br>
+        <input type="number" name="marks" value="{{ question.Marks }}" required><br><br>
+
+        <label>Answer</label><br>
+        <textarea name="answer" required>{{ question.Answer }}</textarea><br><br>
+
+        <button type="submit">Save Changes</button>
+    </form>
+
+    <br>
+
+    <a href="{{ url_for('question_list') }}">Back to Question List</a>
+</body>
+</html>
+```
+
+这个页面复用了创建题目页面的表单结构，但是会把当前题目的原始内容显示在输入框中，方便用户修改。
+
+---
+
+## Delete 功能实现
+
+在 `app.py` 中新增删除题目的路由：
+
+```python
+@app.route("/questions/<int:question_id>/delete", methods=["POST"])
+def delete_question(question_id):
+    if "username" not in session:
+        return redirect(url_for("login"))
+
+    questions = load_questions()
+
+    updated_questions = []
+    for q in questions:
+        if q["id"] != question_id:
+            updated_questions.append(q)
+
+    save_questions(updated_questions)
+
+    return redirect(url_for("question_list"))
+```
+
+删除功能的逻辑是：
+
+1. 读取 `questions.json`。
+2. 遍历所有题目。
+3. 保留 id 不等于当前 `question_id` 的题目。
+4. 将更新后的题目列表重新保存到 `questions.json`。
+5. 返回 Question List 页面。
+
+---
+
+## 问题 1：为什么 Delete 不直接用链接
+
+### 原因
+
+删除数据属于修改服务器数据的操作，不应该直接使用普通链接：
+
+```html
+<a href="/questions/1/delete">Delete</a>
+```
+
+因为普通链接默认是 GET 请求，而 GET 更适合查看页面，不适合执行删除操作。
+
+---
+
+### 解决方法
+
+删除功能使用 POST 请求。
+
+由于 `<select>` 不能直接提交 POST 请求，所以使用 JavaScript 临时创建一个 form：
+
+```javascript
+const form = document.createElement("form");
+form.method = "POST";
+form.action = "/questions/" + questionId + "/delete";
+document.body.appendChild(form);
+form.submit();
+```
+
+---
+
+### 学习
+
+我理解了：
+
+GET 通常用于获取页面或数据。
+
+POST 通常用于提交、修改或删除数据。
+
+删除题目时使用 POST 更安全，也更符合 Web 开发习惯。
+
+---
+
+## 问题 2：其他 Actions 功能暂时还没有后端逻辑
+
+### 原因
+
+目前只实现了 Edit 和 Delete。
+
+其他功能，例如：
+
+* Preview
+* Duplicate
+* Manage Tags
+* History
+* Export As
+
+还没有对应的 Flask route 和页面。
+
+---
+
+### 解决方法
+
+先使用 `alert()` 作为占位功能：
+
+```javascript
+alert("Preview feature is not implemented yet.");
+```
+
+这样用户点击时不会完全没反应，同时也能保留未来功能入口。
+
+---
+
+### 学习
+
+我理解了：
+
+在开发系统时，可以先把完整菜单结构搭好，再逐步实现每个功能。
+
+暂时没有完成的功能可以先用 placeholder 占位，这样页面结构不会频繁大改。
+
+---
+
+## 测试记录
+
+### 测试 1：Actions 下拉菜单显示
+
+结果：
+
+每一道题的 Actions 列都显示下拉菜单。
+
+菜单包含：
+
+* Edit
+* Preview
+* Duplicate
+* Manage Tags
+* Delete
+* History
+* Export As
+
+状态：通过
+
+---
+
+### 测试 2：点击 Edit
+
+操作：
+
+在某一道题的 Actions 下拉菜单中选择 Edit。
+
+结果：
+
+成功跳转到对应题目的编辑页面：
+
+```text
+/questions/<question_id>/edit
+```
+
+状态：通过
+
+---
+
+### 测试 3：编辑题目并保存
+
+操作：
+
+修改题目的 title、main question、marks 或 answer，然后点击 Save Changes。
+
+结果：
+
+题目信息成功保存到 `questions.json`。
+
+页面自动返回 Question List。
+
+状态：通过
+
+---
+
+### 测试 4：点击 Delete
+
+操作：
+
+在某一道题的 Actions 下拉菜单中选择 Delete。
+
+结果：
+
+页面弹出确认框：
+
+```text
+Are you sure you want to delete this question?
+```
+
+状态：通过
+
+---
+
+### 测试 5：确认删除
+
+操作：
+
+在确认框中点击 OK。
+
+结果：
+
+该题目从 `questions.json` 中删除。
+
+页面自动返回 Question List。
+
+状态：通过
+
+---
+
+### 测试 6：取消删除
+
+操作：
+
+在确认框中点击 Cancel。
+
+结果：
+
+题目没有被删除。
+
+页面保持正常。
+
+状态：通过
+
+---
+
+### 测试 7：点击其他占位功能
+
+操作：
+
+选择 Preview、Duplicate、Manage Tags、History、Export As。
+
+结果：
+
+页面弹出功能未实现的提示。
+
+状态：通过
+
+---
+
+## 今日学习总结
+
+今天完成了 Question List 页面中 Actions 下拉菜单的功能化改造。
+
+相比之前只是在页面中显示选项，今天的下拉菜单已经可以根据用户选择执行不同操作。
+
+今天主要理解了：
+
+1. `<select>` 可以通过 `onchange` 监听用户选择。
+2. `<option value="">` 中的 value 才是 JavaScript 真正读取到的值。
+3. `window.location.href` 可以让页面跳转到指定 URL。
+4. 删除操作应该使用 POST 请求，而不是普通 GET 链接。
+5. JavaScript 可以动态创建 form，并提交 POST 请求。
+6. Flask 可以通过 `/questions/<int:question_id>/edit` 实现编辑指定题目。
+7. Flask 可以通过 `/questions/<int:question_id>/delete` 删除指定题目。
+8. 还没实现的功能可以先用 `alert()` 占位，后续再逐步补充真实逻辑。
+9. 前端 Actions 菜单和后端 Flask route 需要一一对应，否则点击后不会产生实际效果。
+
+今天系统已经具备了基础的题目管理能力：
+
+* 查看题目列表
+* 查看题目详情
+* 创建题目
+* 编辑题目
+* 删除题目

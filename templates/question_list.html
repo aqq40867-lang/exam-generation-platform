@@ -44,15 +44,15 @@
                         </td>
 
                         <td>
-                            <select>
-                                <option>Edit</option>
-                                <option>Preview</option>
-                                <option>Edit Question</option>
-                                <option>Duplicate</option>
-                                <option>Manage Tags</option>
-                                <option>Delete</option>
-                                <option>History</option>
-                                <option>Export As</option>
+                            <select onchange="handleAction(this, '{{ question.id }}')">
+                                <option value="">Edit</option>
+                                <option value="preview">Preview</option>
+                                <option value="edit">Edit Question</option>
+                                <option value="duplicate">Duplicate</option>
+                                <option value="manage_tags">Manage Tags</option>
+                                <option value="delete">Delete</option>
+                                <option value="history">History</option>
+                                <option value="export">Export As</option>
                             </select>
                         </td>
 
@@ -77,5 +77,49 @@
     <br>
 
     <a href="{{ url_for('logout') }}">Logout</a>
+
+    <script>
+    function handleAction(selectElement, questionId) {
+        const action = selectElement.value;
+
+        if (action === "edit") {
+            window.location.href = "/questions/" + questionId + "/edit";
+        }
+
+        else if (action === "delete") {
+            const confirmDelete = confirm("Are you sure you want to delete this question?");
+
+            if (confirmDelete) {
+                const form = document.createElement("form");
+                form.method = "POST";
+                form.action = "/questions/" + questionId + "/delete";
+                document.body.appendChild(form);
+                form.submit();
+            }
+        }
+
+        else if (action === "preview") {
+            alert("Preview feature is not implemented yet.");
+        }
+
+        else if (action === "duplicate") {
+            alert("Duplicate feature is not implemented yet.");
+        }
+
+        else if (action === "manage_tags") {
+            alert("Manage Tags feature is not implemented yet.");
+        }
+
+        else if (action === "history") {
+            alert("History feature is not implemented yet.");
+        }
+
+        else if (action === "export") {
+            alert("Export feature is not implemented yet.");
+        }
+
+        selectElement.value = "";
+    }
+</script>
 </body>
 </html>
