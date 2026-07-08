@@ -1495,3 +1495,256 @@ Are you sure you want to delete this question?
 * 创建题目
 * 编辑题目
 * 删除题目
+
+
+7.8 阶段 7：从 Flask 迁移到 NiceGUI
+
+目标
+
+将现有的 Flask Web 应用完全迁移到 NiceGUI 框架，使用 Python 原生组件替代 HTML 模板，实现更现代化的交互体验。
+
+NiceGUI 是一个基于 Python 的 UI 框架，它允许开发者使用 Python 代码直接创建 Web 界面，无需编写 HTML、CSS 和 JavaScript。
+
+迁移背景
+
+为什么从 Flask 迁移到 NiceGUI？
+
+统一技术栈：前后端都使用 Python，减少语言切换成本。
+更快的开发速度：使用 Python 组件构建 UI，无需编写 HTML 模板。
+更好的交互体验：NiceGUI 内置了丰富的 UI 组件和交互功能。
+实时更新：支持热重载，修改代码后自动刷新页面。
+简化部署：不需要单独配置前端服务器。
+功能需求
+
+保留所有原有功能
+
+所有页面使用 NiceGUI 组件替代 HTML 模板。
+登录状态使用 app.storage.user 替代 Flask session。
+页面跳转使用 ui.navigate.to() 替代 redirect(url_for())。
+错误提示使用 ui.notify() 替代页面内嵌错误信息。
+保持 questions.json 作为数据持久化存储。
+技术实现
+
+2. 核心技术变化
+
+Flask	NiceGUI
+@app.route()	@ui.page()
+render_template()	直接调用页面函数
+session	app.storage.user
+redirect(url_for())	ui.navigate.to()
+request.form	组件 .value 属性
+HTML 模板	Python 组件 (ui.input, ui.button)
+页面内嵌错误信息	ui.notify()
+
+问题 2：路由参数格式差异
+
+原因
+
+Flask 使用 <int:question_id> 格式定义路由参数：
+
+python
+@app.route("/questions/<int:question_id>")
+NiceGUI 使用 {question_id} 格式，并在函数参数中指定类型：
+
+python
+@ui.page("/questions/{question_id}")
+def question_detail(question_id: int):
+解决方法
+
+将所有路由定义从 Flask 格式改为 NiceGUI 格式：
+
+Flask 版本：
+
+python
+@app.route("/questions/<int:question_id>")
+def question_detail(question_id):
+    # ...
+
+@app.route("/questions/<int:question_id>/edit", methods=["GET", "POST"])
+def edit_question(question_id):
+    # ...
+NiceGUI 版本：
+
+python
+@ui.page("/questions/{question_id}")
+def question_detail(question_id: int):
+    # ...
+
+@ui.page("/questions/{question_id}/edit")
+def edit_question(question_id: int):
+    # ...
+学习
+
+我理解了：
+
+Flask 使用 <converter:variable> 格式，如 <int:question_id>。
+NiceGUI 使用 {variable} 格式，如 {question_id}。
+NiceGUI 在函数参数中使用类型注解（如 question_id: int）来实现类型转换。
+问题 3：session 到 storage 的迁移
+
+原因
+
+Flask 使用 session 对象存储用户登录状态：
+
+python
+session['logged_in'] = True
+session['username'] = user
+NiceGUI 使用 app.storage.user 存储用户状态：
+
+python
+app.storage.user['logged_in'] = True
+app.storage.user['username'] = user
+解决方法
+
+全局替换所有 session 操作为 app.storage.user：
+
+Flask 版本：
+
+python
+# 登录
+session['logged_in'] = True
+session['username'] = username
+
+# 检查登录
+if not session.get('logged_in'):
+    return redirect(url_for('login'))
+
+# 登出
+session.clear()
+NiceGUI 版本：
+
+python
+# 登录
+app.storage.user['logged_in'] = True
+app.storage.user['username'] = username
+
+# 检查登录
+if not app.storage.user.get('logged_in'):
+    ui.navigate.to('/login')
+
+# 登出
+app.storage.user.clear()
+学习
+
+我理解了：
+
+Flask session 和 NiceGUI storage 功能相似，但 API 不同。
+app.storage.user 是 NiceGUI 提供的用户级存储。
+可以使用 .get() 方法安全地获取存储值。
+使用 .clear() 方法清除所有存储数据。
+问题 4：表单提交改为事件处理
+
+原因
+
+Flask 使用 HTML <form> 提交数据：
+
+html
+<form method="POST">
+    <input type="text" name="title">
+    <button type="submit">Save</button>
+</form>
+NiceGUI 使用按钮点击事件处理数据：
+
+python
+def save():
+    title = title_input.value
+    # 处理数据...
+
+ui.button("Save", on_click=save)
+解决方法
+
+将所有表单提交改为事件驱动：
+
+Flask 版本（create_question.html）：
+
+html
+<form method="POST">
+    <input type="text" name="title" required>
+    <textarea name="main_text" required></textarea>
+    <button type="submit">Save</button>
+</form>
+NiceGUI 版本（pages/create_question.py）：
+
+python
+def save_question():
+    title = title_input.value.strip()
+    main_text = main_text_input.value.strip()
+    
+    if not title:
+        ui.notify("Question title is required.", color="negative")
+        return
+    
+    # 保存数据...
+    ui.notify("Question created successfully!", color="positive")
+    ui.navigate.to("/questions")
+
+ui.input("Question Title", placeholder="Enter question title")
+ui.textarea("Main Question Text", placeholder="Enter the main question text")
+ui.button("Save", on_click=save_question, color="primary")
+ui.button("Cancel", on_click=lambda: ui.navigate.to("/questions"))
+学习
+
+我理解了：
+
+Flask 使用同步表单提交，页面会刷新。
+NiceGUI 使用异步事件驱动，页面不刷新。
+NiceGUI 可以通过 .value 属性直接获取输入框的值。
+输入验证可以在事件处理函数中完成，并通过 ui.notify() 反馈用户。
+问题 5：页面布局方式变化
+
+原因
+
+Flask 使用 HTML + CSS 进行页面布局：
+
+html
+<div class="container">
+    <h1>Title</h1>
+    <form>...</form>
+</div>
+NiceGUI 使用 Python 组件进行布局：
+
+python
+with ui.column().classes("w-full max-w-4xl mx-auto p-8"):
+    ui.label("Title").classes("text-3xl font-bold")
+    with ui.card():
+        # 内容...
+解决方法
+
+使用 NiceGUI 的布局组件替代 HTML div：
+
+Flask 版本：
+
+html
+<div class="container">
+    <h1>Create New Question</h1>
+    <form method="POST">
+        <label>Question title</label>
+        <input type="text" name="title">
+        <button type="submit">Save</button>
+    </form>
+    <a href="/questions">Back</a>
+</div>
+NiceGUI 版本：
+
+python
+with ui.column().classes("w-full max-w-4xl mx-auto p-8"):
+    ui.label("Create New Question").classes("text-3xl font-bold mb-6")
+    
+    with ui.card().classes("w-full p-6"):
+        ui.label("Question Title").classes("font-semibold")
+        title_input = ui.input(placeholder="Enter question title").classes("w-full mb-4")
+        
+        with ui.row().classes("gap-4 mt-2"):
+            ui.button("Save", on_click=save_question, color="primary")
+            ui.button("Cancel", on_click=lambda: ui.navigate.to("/questions"))
+学习
+
+我理解了：
+
+NiceGUI 使用 ui.column() 创建垂直布局。
+使用 ui.row() 创建水平布局。
+使用 ui.card() 创建卡片容器。
+使用 .classes() 方法添加 CSS 类进行样式控制。
+上下文管理器（with 语句）用于构建嵌套布局。
+测试记录
+
