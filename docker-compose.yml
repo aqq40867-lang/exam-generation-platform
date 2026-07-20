@@ -1,0 +1,8 @@
+services:
+  exam-platform:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./exam_platform.db:/app/exam_platform.db
+    restart: unless-stopped

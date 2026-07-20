@@ -1,5 +1,5 @@
 from nicegui import ui, app
-from database import get_question, delete_question
+from database import get_question, delete_question, load_questions
 
 
 def question_detail_page(question_id: int):
@@ -18,10 +18,27 @@ def question_detail_page(question_id: int):
         ui.navigate.to("/questions")
         return
     
+    username = app.storage.user["username"]
+    
+    # Only the creator can view this question
+    if question.get("Created by") != username:
+        ui.notify("You do not have permission to view this question.", color="negative")
+        ui.navigate.to("/questions")
+        return
+    
+    # Work out this question's per-user display number (1, 2, 3... per creator),
+    # independent of the real database id used in the URL
+    user_questions = sorted(
+        (q for q in load_questions() if q.get("Created by") == username),
+        key=lambda q: q["id"]
+    )
+    user_question_ids = [q["id"] for q in user_questions]
+    display_id = user_question_ids.index(question_id) + 1 if question_id in user_question_ids else question_id
+    
     with ui.column().classes("w-full max-w-4xl mx-auto p-8"):
         
         # Header
-        ui.label(f"Question Detail #{question_id}").classes("text-3xl font-bold mb-6")
+        ui.label(f"Question Detail #{display_id}").classes("text-3xl font-bold mb-6")
         
         # Question details card
         with ui.card().classes("w-full p-6"):

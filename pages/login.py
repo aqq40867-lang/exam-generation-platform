@@ -2,7 +2,7 @@ from nicegui import ui, app
 
 # Username and password
 USERS = {
-    "teacher1": "123456",
+    "Luca": "1",
     "teacher2": "456789",
     "1": "1",
 }
