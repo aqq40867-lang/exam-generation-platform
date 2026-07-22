@@ -1440,3 +1440,267 @@ The system now has the basic question management functions:
 * Delete question
 
 This means the core CRUD functionality of the Question Bank is now basically complete.
+
+# 7.19 Stage 8: Permission Isolation, User-Specific Question IDs and Docker Deployment
+
+## Objective
+
+Further improve the system in terms of access control, data presentation, user interaction, and deployment. This stage introduces question ownership isolation, user-specific question numbering, an improved table action menu, SQLite database persistence, and Docker containerization.
+
+## Functional Requirements
+
+1. Questions should only be visible to the user who created them.
+2. Users must not be able to view or edit other users' questions, even by entering the URL directly.
+3. Each user should see question IDs starting from 1 independently.
+4. Move the View, Edit, and Delete actions into a dropdown menu inside the table.
+5. Use SQLite as the persistent database instead of in-memory or JSON storage.
+6. Provide a Dockerfile and docker-compose configuration for containerized deployment.
+
+## Technical Implementation
+
+This stage introduces ownership-based access control by storing the creator of each question (`Created by`) and filtering questions according to the currently logged-in user. Permission validation is also added to the question detail and edit pages.
+
+A user-specific display ID (`display_id`) is generated for presentation purposes, while the database primary key remains unchanged for routing and CRUD operations.
+
+The data storage layer is migrated to SQLite using Python's built-in `sqlite3` module.
+
+Finally, Docker and Docker Compose are configured to package the application and provide a consistent deployment environment.
+
+---
+
+## Issue 1: Users Could View Questions Created by Other Accounts
+
+### Cause
+
+`question_list.py` directly called `load_questions()` to retrieve all questions without filtering them by the current user, allowing every user to see all questions.
+
+### Solution
+
+Retrieve the current username and only display questions created by that user.
+
+```python
+username = app.storage.user["username"]
+
+all_questions = load_questions()
+questions = [
+    q for q in all_questions
+    if q.get("Created by") == username
+]
+```
+
+Permission checks were also added to `question_detail.py` and `edit_question.py` to prevent users from bypassing the list page by directly entering URLs such as `/questions/5`.
+
+```python
+if question.get("Created by") != username:
+    ui.notify(
+        "You do not have permission to view this question.",
+        color="negative"
+    )
+    ui.navigate.to("/questions")
+    return
+```
+
+### Learning
+
+I learned that filtering data only on the list page is not sufficient. Since every `@ui.page` in NiceGUI can be accessed independently, permission checks must also be implemented on every page that accesses protected data. Access control should always be based on data ownership rather than relying on whether a navigation entry is visible.
+
+---
+
+## Issue 2: Question IDs Needed to Start from 1 for Each User
+
+### Cause
+
+The database `id` is a globally unique primary key used for routing and CRUD operations. Replacing it with user-specific numbering would result in duplicate IDs across different users and break database operations.
+
+### Solution
+
+Keep the database `id` unchanged and introduce a separate `display_id` for presentation.
+
+```python
+questions.sort(key=lambda q: q["id"])
+
+for display_id, q in enumerate(questions, start=1):
+    q["display_id"] = display_id
+```
+
+The table displays `display_id`, while all View, Edit, and Delete operations continue using the actual database `id`.
+
+### Learning
+
+I learned that presentation IDs and database primary keys serve different purposes. The primary key ensures data integrity, while a separate display ID improves the user experience without affecting the underlying database.
+
+---
+
+## Issue 3: Action Buttons Were Separated from the Table
+
+### Cause
+
+The original implementation rendered View, Edit, and Delete buttons as cards below the table, which occupied unnecessary space and separated the operations from the corresponding table rows.
+
+### Solution
+
+A new **Actions** column was added using NiceGUI's `table.add_slot()` together with Quasar's `q-btn` and `q-menu` components.
+
+```python
+table.add_slot("body-cell-actions", r"""
+<q-td :props="props" auto-width>
+    <q-btn flat dense round icon="more_vert">
+        <q-menu auto-close>
+            <q-list>
+                <q-item clickable
+                        @click="$parent.$emit('view', props.row)">
+```
+
+Python receives these events through:
+
+```python
+table.on("view", ...)
+table.on("edit", ...)
+table.on("delete", ...)
+```
+
+### Learning
+
+I learned that NiceGUI supports custom Vue/Quasar components inside tables through `add_slot()`. Front-end events can be sent back to Python using `$parent.$emit()` and handled by `table.on()`, providing a cleaner and more scalable interaction pattern similar to modern admin systems.
+
+---
+
+## Issue 4: Question Data Was Not Persisted
+
+### Cause
+
+The project previously relied on temporary storage without a proper database, making data persistence unreliable.
+
+### Solution
+
+SQLite was adopted as the persistent database using Python's built-in `sqlite3` module.
+
+```python
+def get_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+```
+
+Database functions including `load_questions()`, `get_question()`, `add_question()`, `update_question()`, and `delete_question()` were implemented to replace the previous storage mechanism.
+
+### Learning
+
+I learned that SQLite is lightweight, requires no separate database server, and is well suited for small projects. Using `sqlite3.Row` allows query results to be accessed by column names, making them compatible with the existing page logic. Columns containing spaces, such as `"Created by"`, must be enclosed in double quotation marks in SQL statements.
+
+---
+
+## Issue 5: The Project Required Manual Environment Setup on New Computers
+
+### Cause
+
+Cloning the repository only downloads the source code. Python, project dependencies, and runtime configuration still need to be installed manually, which may lead to inconsistent development environments.
+
+### Solution
+
+A Dockerfile was created to package the application environment.
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 8080
+
+CMD ["python", "app.py"]
+```
+
+A `docker-compose.yml` file was also added. The project can be started by running:
+
+```bash
+docker compose up --build
+```
+
+The SQLite database file is mounted using Docker volumes to ensure that data remains available after rebuilding containers.
+
+### Learning
+
+I learned that Docker packages the entire runtime environment to ensure consistency across different machines. New users only need Docker installed and do not need to install Python or project dependencies separately. Since SQLite database files are not tracked by Git by default, they should be backed up separately when moving between machines.
+
+---
+
+## Test Results
+
+### Test 1: Question Isolation Between Users
+
+**Action:**
+
+- Log in as teacher1 and create questions.
+- Log in as teacher2 and view the question list.
+
+**Result:**
+
+teacher2 cannot view questions created by teacher1.
+
+**Status:** Passed
+
+---
+
+### Test 2: Direct URL Access
+
+**Action:**
+
+Directly enter the URL of another user's question.
+
+**Result:**
+
+The system blocks access and redirects the user back to the question list.
+
+**Status:** Passed
+
+---
+
+### Test 3: User-Specific Question Numbering
+
+**Action:**
+
+Different users create multiple questions.
+
+**Result:**
+
+Each user sees question IDs starting from 1, while the database primary keys remain unchanged.
+
+**Status:** Passed
+
+---
+
+### Test 4: Action Dropdown Menu
+
+**Action:**
+
+Test the View, Edit, and Delete options from the Actions dropdown menu.
+
+**Result:**
+
+All operations function correctly, and the Delete option displays a confirmation dialog.
+
+**Status:** Passed
+
+---
+
+### Test 5: Docker Deployment
+
+**Action:**
+
+Run:
+
+```bash
+docker compose up --build
+```
+
+**Result:**
+
+The Docker image is successfully built, the application starts correctly, and the database persists after rebuilding the container.
+
+**Status:** Passed

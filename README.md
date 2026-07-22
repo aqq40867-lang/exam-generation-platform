@@ -91,18 +91,6 @@ The SQLite database file (`exam_platform.db`) is created automatically on first 
 
 With Docker, you don't need to install Python or any dependencies on the host machine — everything runs inside the container.
 
-## Login
-
-Use one of the demo accounts below to log in (defined in `login.py`):
-
-| Username  | Password |
-|-----------|----------|
-| Luca      | 1        |
-| teacher2  | 456789   |
-| 1         | 1        |
-
-> These are placeholder credentials for development/testing. Replace them with a proper user store before using this in any real environment.
-
 ## Data Persistence
 
 All question data is stored in `exam_platform.db`, a single SQLite file created in the project directory. This file is not tracked by git by default — back it up manually (or add it to version control) if you want to preserve your data across machines.

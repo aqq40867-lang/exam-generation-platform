@@ -1497,15 +1497,15 @@ Are you sure you want to delete this question?
 * 删除题目
 
 
-7.8 阶段 7：从 Flask 迁移到 NiceGUI
+# 7.8 阶段 7：从 Flask 迁移到 NiceGUI
 
-目标
+## 目标
 
 将现有的 Flask Web 应用完全迁移到 NiceGUI 框架，使用 Python 原生组件替代 HTML 模板，实现更现代化的交互体验。
 
 NiceGUI 是一个基于 Python 的 UI 框架，它允许开发者使用 Python 代码直接创建 Web 界面，无需编写 HTML、CSS 和 JavaScript。
 
-迁移背景
+## 迁移背景
 
 为什么从 Flask 迁移到 NiceGUI？
 
@@ -1748,3 +1748,285 @@ NiceGUI 使用 ui.column() 创建垂直布局。
 上下文管理器（with 语句）用于构建嵌套布局。
 测试记录
 
+# 7.19 阶段 8：权限隔离、题库编号与容器化部署
+
+## 目标
+
+进一步完善系统的权限控制、数据展示、交互体验和部署方式，实现教师题目隔离、独立题目编号、优化操作界面，并引入 SQLite 持久化数据库和 Docker 容器化部署。
+
+## 功能需求
+
+1. 题目数据按创建者隔离，不同账号之间互不可见。
+2. 无论通过列表点击还是直接输入 URL，都不能访问或编辑他人题目。
+3. 每位用户看到的题目编号从 1 开始独立计数，不受其他用户影响。
+4. 查看、编辑、删除操作整合到表格内下拉菜单中，替代页面下方卡片按钮。
+5. 使用 SQLite 实现数据持久化。
+6. 提供 Dockerfile 和 docker-compose.yml，实现项目容器化部署。
+
+## 技术实现
+
+本阶段在原有系统基础上新增权限控制逻辑，所有题目均记录创建者信息（Created by），页面根据当前登录用户进行数据过滤，并在详情页和编辑页增加权限校验。
+
+为提升用户体验，在列表页新增用户独立编号（display_id），保留数据库真实主键用于数据操作。
+
+数据存储由原有方式迁移至 SQLite，并使用 Python 内置 sqlite3 模块实现数据库访问接口。
+
+最后编写 Dockerfile 与 docker-compose.yml，实现环境配置自动化和数据库持久化。
+
+---
+
+## 问题 1：不同账号能够查看彼此创建的题目
+
+### 原因
+
+`question_list.py` 中直接调用 `load_questions()` 获取全部题目，没有根据当前登录用户进行过滤，因此所有用户都能看到所有题目。
+
+### 解决方法
+
+获取当前登录用户名，仅保留当前用户创建的题目：
+
+```python
+username = app.storage.user["username"]
+
+all_questions = load_questions()
+questions = [
+    q for q in all_questions
+    if q.get("Created by") == username
+]
+```
+
+同时，在 `question_detail.py` 和 `edit_question.py` 中增加权限校验，防止用户通过直接输入 URL（如 `/questions/5`）绕过列表访问其他用户的数据。
+
+```python
+if question.get("Created by") != username:
+    ui.notify(
+        "You do not have permission to view this question.",
+        color="negative"
+    )
+    ui.navigate.to("/questions")
+    return
+```
+
+### 学习
+
+我理解了 NiceGUI 的每个 `@ui.page` 都可以独立访问，因此权限校验不能只放在列表页，而应放在所有涉及数据访问的页面。权限判断应依据数据本身的归属字段，而不是依赖页面是否展示入口。
+
+---
+
+## 问题 2：题目编号需要按用户独立从 1 开始，但不能影响数据库主键
+
+### 原因
+
+数据库中的 `id` 是全局唯一主键，同时用于数据查询、更新、删除以及页面路由。如果直接修改数据库 `id` 为用户独立编号，不同用户会产生重复 ID，导致数据库查询和页面路由冲突。
+
+### 解决方法
+
+保留数据库真实 `id`，新增用于页面展示的 `display_id`：
+
+```python
+questions.sort(key=lambda q: q["id"])
+
+for display_id, q in enumerate(questions, start=1):
+    q["display_id"] = display_id
+```
+
+表格中的编号列和详情页标题均显示 `display_id`，而查看、编辑、删除操作仍使用真实 `id`。
+
+### 学习
+
+我理解了数据库主键和页面展示编号可以完全分离。数据库主键负责保证数据唯一性，而展示编号只负责改善用户体验，两者互不影响。
+
+---
+
+## 问题 3：操作按钮分散在页面下方，交互体验较差
+
+### 原因
+
+原来的列表页在表格下方循环渲染卡片，每张卡片包含 View、Edit、Delete 三个按钮，占用了较多页面空间，也使操作区域与表格数据分离。
+
+### 解决方法
+
+利用 NiceGUI 的 `table.add_slot()` 在表格中新增 Actions 列，并使用 Quasar 的 `q-btn` 和 `q-menu` 实现下拉菜单。
+
+```python
+table.add_slot("body-cell-actions", r"""
+<q-td :props="props" auto-width>
+    <q-btn flat dense round icon="more_vert">
+        <q-menu auto-close>
+            <q-list>
+                <q-item clickable
+                        @click="$parent.$emit('view', props.row)">
+```
+
+随后通过 `table.on()` 接收菜单点击事件，在 Python 中完成页面跳转和删除确认。
+
+```python
+table.on("view", ...)
+table.on("edit", ...)
+table.on("delete", ...)
+```
+
+### 学习
+
+我理解了 NiceGUI 支持通过 `add_slot()` 向表格插入自定义 Vue/Quasar 组件，并通过 `$parent.$emit()` 与 Python 的 `table.on()` 实现前后端交互。这种方式比额外渲染卡片更加紧凑，也更符合后台管理系统的设计习惯。
+
+---
+
+## 问题 4：题目数据没有持久化到数据库
+
+### 原因
+
+项目缺少真正的数据库，仅依赖原有存储方式保存数据，程序关闭后数据无法稳定保存，也不利于后续扩展。
+
+### 解决方法
+
+采用 SQLite 作为持久化数据库，并使用 Python 内置 `sqlite3` 模块建立数据库连接：
+
+```python
+def get_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+```
+
+实现以下数据库接口：
+
+- `load_questions()`
+- `get_question()`
+- `add_question()`
+- `update_question()`
+- `delete_question()`
+
+数据库字段与页面代码保持一致，包括：
+
+- Question
+- Main question
+- Marks
+- Answer
+- Status
+- Version
+- Created by
+- Created at
+- Updated at
+- Usage
+
+### 学习
+
+我理解了 SQLite 无需安装数据库服务器，非常适合小型项目和教学项目。设置 `row_factory = sqlite3.Row` 后，可以通过字段名访问查询结果，与页面代码保持一致。对于包含空格的字段名，需要在 SQL 中使用双引号包裹。
+
+---
+
+## 问题 5：项目迁移到新电脑需要重新配置开发环境
+
+### 原因
+
+`git clone` 只能获取项目代码，不会同步 Python 环境和依赖，因此每台新电脑都需要重新安装环境，容易产生环境不一致的问题。
+
+### 解决方法
+
+编写 `Dockerfile`：
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 8080
+
+CMD ["python", "app.py"]
+```
+
+同时编写 `docker-compose.yml`，启动项目时执行：
+
+```bash
+docker compose up --build
+```
+
+即可自动安装依赖并运行项目，同时通过 `volumes` 挂载数据库文件，实现数据持久化。
+
+### 学习
+
+我理解了 Docker 的核心作用是统一开发和运行环境，而不是完全消除环境依赖。新电脑只需安装 Docker 即可运行项目，无需单独安装 Python 和第三方依赖。同时，SQLite 数据库文件默认不会随 Git 同步，需要单独备份或迁移。
+
+---
+
+## 测试记录
+
+### 测试 1：多账号数据隔离
+
+**操作：**
+
+- teacher1 创建题目
+- teacher2 登录查看题库
+
+**结果：**
+
+teacher2 无法看到 teacher1 创建的题目。
+
+**状态：** 通过
+
+---
+
+### 测试 2：直接访问他人题目 URL
+
+**操作：**
+
+直接输入其他用户题目的 URL。
+
+**结果：**
+
+系统提示无权限访问，并自动返回题库列表。
+
+**状态：** 通过
+
+---
+
+### 测试 3：用户独立编号
+
+**操作：**
+
+不同账号分别创建多道题目。
+
+**结果：**
+
+每位用户看到的题目编号均从 1 开始，数据库真实 ID 保持不变。
+
+**状态：** 通过
+
+---
+
+### 测试 4：表格操作菜单
+
+**操作：**
+
+点击 Actions 下拉菜单，依次测试查看、编辑、删除。
+
+**结果：**
+
+各项功能均正常执行，删除操作能够弹出确认提示。
+
+**状态：** 通过
+
+---
+
+### 测试 5：Docker 部署
+
+**操作：**
+
+执行：
+
+```bash
+docker compose up --build
+```
+
+**结果：**
+
+镜像成功构建，项目正常启动；重建容器后数据库数据仍然保留。
+
+**状态：** 通过
