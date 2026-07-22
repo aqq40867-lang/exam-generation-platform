@@ -20,6 +20,13 @@ def question_list_page():
             on_click=lambda: ui.navigate.to("/questions/new")
         )
 
+        if app.storage.user.get("role") == "admin":
+            ui.button(
+                "User Management",
+                on_click=lambda: ui.navigate.to("/admin/users"),
+                color="secondary"
+            )
+
         def logout():
             app.storage.user.clear()
             ui.navigate.to("/login")

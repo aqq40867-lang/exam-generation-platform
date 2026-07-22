@@ -1,11 +1,5 @@
 from nicegui import ui, app
-
-# Username and password
-USERS = {
-    "Luca": "1",
-    "teacher2": "456789",
-    "1": "1",
-}
+from database import authenticate_user
 
 
 def login_page():
@@ -37,13 +31,16 @@ def login_page():
             user = username.value.strip()
             pwd = password.value
 
-            if user in USERS and USERS[user] == pwd:
+            authenticated_user = authenticate_user(user, pwd)
+
+            if authenticated_user:
 
                 app.storage.user["logged_in"] = True
-                app.storage.user["username"] = user
+                app.storage.user["username"] = authenticated_user["Username"]
+                app.storage.user["role"] = authenticated_user["Role"]
 
                 ui.notify(
-                    f"Welcome, {user}!",
+                    f"Welcome, {authenticated_user['Username']}!",
                     color="positive"
                 )
 
@@ -61,8 +58,7 @@ def login_page():
             on_click=login
         ).classes("w-full")
 
-        ui.separator()
-
-        ui.label(
-            "Please log in using your teacher account."
-        ).classes("text-grey")
+        ui.button(
+            "Create New Account",
+            on_click=lambda: ui.navigate.to("/signup")
+        ).classes("w-full")

@@ -2030,3 +2030,43 @@ docker compose up --build
 镜像成功构建，项目正常启动；重建容器后数据库数据仍然保留。
 
 **状态：** 通过
+
+
+
+
+
+7.22
+database.py
+
+在原本只有 questions 表的基础上,新增了三张表和对应的读写函数:
+
+users(账号、密码哈希+盐、角色、创建/登录时间)
+exams(考卷:名称、说明、总分、状态等)
+exam_questions(exams 和 questions 的多对多关联表,记录每场考试用了哪些题、顺序、以及该场考试里的分值覆盖)
+
+密码用标准库 hashlib.pbkdf2_hmac + 随机盐哈希存储,不存明文。之前有个 _LEGACY_USERS 临时迁移字典,把旧的硬编码账号(Luca/teacher2/1)写进数据库,现在账号已经真实存在于数据库,这个临时代码已经删掉了。
+
+pages/login.py
+
+登录逻辑从硬编码字典查密码,改成调用 database.authenticate_user() 走数据库校验,其他页面用到的 app.storage.user["username"] 没变,不受影响。
+
+另外顺带确认了 questions.json 现在没人用了(旧 JSON 存储阶段的遗留文件),可以留着当历史记录,也可以删。
+
+exams 相关目前只做了底层表和函数,还没有对应的界面(比如新建考卷、把题目加入考卷的页面)。
+
+
+Thought process
+Thought process
+目前完成的是"普通用户 vs 管理员"角色体系,具体改动:
+
+数据库层(database.py)新增 update_user_role 函数,配合原有的 create_user/delete_user/list_users,支持角色管理。角色字段沿用原有的 teacher(普通用户)/admin(管理员)命名。
+
+页面层新增两个:
+
+/signup 新账号注册页,用户名/密码/确认密码,重名会被拦截并提示,注册的账号统一是 teacher 角色
+/admin/users 用户管理页(仅 admin 可见,非 admin 访问会被拦回题目列表),Existing Accounts 表格里可直接用下拉框改某个用户的角色,改动前弹窗二次确认(英文提示,Confirm 才生效、Cancel 则还原)
+入口整合:登录页 Login 按钮下方加了"Create New Account"按钮跳到注册页;题目列表页顶部,admin 账号登录后会多出"User Management"按钮跳到管理页。
+
+另外还有个命令行脚本 seed_admin.py,用于部署最初没有任何 admin 账号时手动造第一个管理员(python seed_admin.py 用户名 密码)——你的 Luca 账号已经直接在数据库里改成了 admin,不需要再跑这个脚本。
+
+所有改动都过了语法检查,注册重名拦截、admin 种子等关键逻辑也在隔离环境里跑过实测。中途发现你的 Downloads 文件夹疑似在云同步,曾导致数据库写入被覆盖一次,建议留意这个风险。

@@ -12,6 +12,10 @@ Why SQLite:
 
 import sqlite3
 import os
+import hashlib
+import secrets
+from datetime import datetime
+from typing import Optional, Tuple
 
 # The .db file will be created next to this file, in the same folder.
 DB_PATH = os.path.join(os.path.dirname(__file__), "exam_platform.db")
@@ -26,11 +30,13 @@ def get_connection():
     """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # Needed so that ON DELETE CASCADE (used by exam_questions) is enforced.
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
 def init_db():
-    """Create the questions table if it doesn't exist yet.
+    """Create all tables if they don't exist yet.
 
     Column names with spaces (like "Created by") are quoted with double
     quotes, which SQLite allows.
@@ -54,9 +60,212 @@ def init_db():
         )
     """)
 
+    # Accounts. Passwords are never stored in plain text: we keep a random
+    # per-user salt plus a PBKDF2-SHA256 hash of (password + salt).
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            "Username" TEXT NOT NULL UNIQUE,
+            "Password hash" TEXT NOT NULL,
+            "Salt" TEXT NOT NULL,
+            "Role" TEXT NOT NULL DEFAULT 'teacher',
+            "Created at" TEXT,
+            "Last login at" TEXT
+        )
+    """)
+
+    # Exams / exam papers.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS exams (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            "Name" TEXT NOT NULL,
+            "Description" TEXT,
+            "Total marks" INTEGER,
+            "Status" TEXT DEFAULT 'Draft',
+            "Created by" TEXT,
+            "Created at" TEXT,
+            "Updated at" TEXT
+        )
+    """)
+
+    # Which questions belong to which exam, in what order, and whether the
+    # question's default mark value is overridden for that specific exam.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS exam_questions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+            question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+            "Order" INTEGER,
+            "Marks override" INTEGER,
+            UNIQUE(exam_id, question_id)
+        )
+    """)
+
     conn.commit()
     conn.close()
 
+
+# ---------------------------------------------------------------------------
+# Users
+# ---------------------------------------------------------------------------
+
+def _hash_password(password: str, salt: Optional[str] = None) -> Tuple[str, str]:
+    """Return (password_hash_hex, salt_hex) using PBKDF2-HMAC-SHA256.
+
+    A fresh random salt is generated when one isn't supplied (i.e. when
+    creating a new user). The same salt must be passed back in to verify
+    a password later.
+    """
+    if salt is None:
+        salt = secrets.token_hex(16)
+
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        bytes.fromhex(salt),
+        100_000,
+    )
+
+    return digest.hex(), salt
+
+
+def create_user(username: str, password: str, role: str = "teacher") -> Optional[int]:
+    """Create a new user with a hashed password. Returns new id, or None if
+    the username is already taken."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    password_hash, salt = _hash_password(password)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        cursor.execute("""
+            INSERT INTO users ("Username", "Password hash", "Salt", "Role", "Created at")
+            VALUES (?, ?, ?, ?, ?)
+        """, (username, password_hash, salt, role, now))
+        conn.commit()
+        new_id = cursor.lastrowid
+    except sqlite3.IntegrityError:
+        new_id = None
+    finally:
+        conn.close()
+
+    return new_id
+
+
+def get_user_by_username(username: str):
+    """Return a single user as a dict, or None if it doesn't exist."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT * FROM users WHERE "Username" = ?', (username,))
+    row = cursor.fetchone()
+
+    conn.close()
+
+    return dict(row) if row else None
+
+
+def authenticate_user(username: str, password: str):
+    """Check username/password against the DB.
+
+    Returns the user dict (password fields excluded) on success, else None.
+    Also updates "Last login at" on success.
+    """
+    user = get_user_by_username(username)
+    if not user:
+        return None
+
+    expected_hash, _ = _hash_password(password, salt=user["Salt"])
+    if not secrets.compare_digest(expected_hash, user["Password hash"]):
+        return None
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute(
+        'UPDATE users SET "Last login at" = ? WHERE id = ?',
+        (now, user["id"]),
+    )
+    conn.commit()
+    conn.close()
+
+    return {
+        "id": user["id"],
+        "Username": user["Username"],
+        "Role": user["Role"],
+        "Created at": user["Created at"],
+        "Last login at": now,
+    }
+
+
+def update_user_password(username: str, new_password: str) -> bool:
+    """Reset a user's password. Returns True if a row was updated."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    password_hash, salt = _hash_password(new_password)
+    cursor.execute("""
+        UPDATE users SET "Password hash" = ?, "Salt" = ?
+        WHERE "Username" = ?
+    """, (password_hash, salt, username))
+
+    conn.commit()
+    success = cursor.rowcount > 0
+    conn.close()
+
+    return success
+
+
+def update_user_role(username: str, new_role: str) -> bool:
+    """Change a user's role. Returns True if a row was updated."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        'UPDATE users SET "Role" = ? WHERE "Username" = ?',
+        (new_role, username),
+    )
+
+    conn.commit()
+    success = cursor.rowcount > 0
+    conn.close()
+
+    return success
+
+
+def delete_user(username: str) -> bool:
+    """Delete a user by username. Returns True if a row was deleted."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute('DELETE FROM users WHERE "Username" = ?', (username,))
+
+    conn.commit()
+    success = cursor.rowcount > 0
+    conn.close()
+
+    return success
+
+
+def list_users():
+    """Return all users (without password hash/salt) as a list of dicts."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT id, "Username", "Role", "Created at", "Last login at" FROM users')
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Questions（题库）
+# ---------------------------------------------------------------------------
+# 存单个题目本身：题干、主问题、分值、答案、状态、版本、创建人等。
+# 一道题创建一次，可以被反复复用到不同的考试里，跟"考试"没有直接关系。
 
 def load_questions():
     """Return all questions as a list of dicts."""
@@ -166,5 +375,170 @@ def delete_question(question_id: int) -> bool:
     return success
 
 
-# Make sure the table exists as soon as this module is imported.
+# ---------------------------------------------------------------------------
+# Exams
+# ---------------------------------------------------------------------------
+# 存一场考试的整体信息：
+# 名字、说明、总分、状态（草稿/发布）、创建人等。它本身不包含具体题目内容，只是一个"壳"。
+
+def load_exams():
+    """Return all exams as a list of dicts."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM exams")
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def get_exam(exam_id: int):
+    """Return a single exam as a dict, or None if it doesn't exist."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM exams WHERE id = ?", (exam_id,))
+    row = cursor.fetchone()
+
+    conn.close()
+
+    return dict(row) if row else None
+
+
+def add_exam(exam: dict) -> int:
+    """Insert a new exam and return its new id."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO exams (
+            "Name", "Description", "Total marks", "Status",
+            "Created by", "Created at"
+        ) VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        exam.get("Name"),
+        exam.get("Description"),
+        exam.get("Total marks"),
+        exam.get("Status", "Draft"),
+        exam.get("Created by"),
+        exam.get("Created at"),
+    ))
+
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+
+    return new_id
+
+
+def update_exam(exam_id: int, updated_exam: dict) -> bool:
+    """Update an existing exam. Returns True if a row was updated."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE exams
+        SET "Name" = ?,
+            "Description" = ?,
+            "Total marks" = ?,
+            "Status" = ?,
+            "Updated at" = ?
+        WHERE id = ?
+    """, (
+        updated_exam.get("Name"),
+        updated_exam.get("Description"),
+        updated_exam.get("Total marks"),
+        updated_exam.get("Status"),
+        updated_exam.get("Updated at"),
+        exam_id,
+    ))
+
+    conn.commit()
+    success = cursor.rowcount > 0
+    conn.close()
+
+    return success
+
+
+def delete_exam(exam_id: int) -> bool:
+    """Delete an exam by id (its exam_questions links cascade). Returns
+    True if a row was deleted."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM exams WHERE id = ?", (exam_id,))
+
+    conn.commit()
+    success = cursor.rowcount > 0
+    conn.close()
+
+    return success
+
+
+# ---------------------------------------------------------------------------
+# Exam <-> Question links (exam_questions)
+# ---------------------------------------------------------------------------
+# 单独存"哪场考试用了哪些题"，是 exams 和 questions 之间的多对多关系表。
+# 每一行代表"某场考试里的某一道题"，还带两个额外信息：
+# Order：这道题在这场考试里排第几
+# Marks override：这道题在这场考试里的分值，如果需要跟题库里的默认分值不一样，可以在这里覆盖
+
+def add_question_to_exam(exam_id: int, question_id: int, order: Optional[int] = None,
+                          marks_override: Optional[int] = None) -> int:
+    """Attach a question to an exam. Returns the new exam_questions row id."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO exam_questions (exam_id, question_id, "Order", "Marks override")
+        VALUES (?, ?, ?, ?)
+    """, (exam_id, question_id, order, marks_override))
+
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+
+    return new_id
+
+
+def remove_question_from_exam(exam_id: int, question_id: int) -> bool:
+    """Detach a question from an exam. Returns True if a row was deleted."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "DELETE FROM exam_questions WHERE exam_id = ? AND question_id = ?",
+        (exam_id, question_id),
+    )
+
+    conn.commit()
+    success = cursor.rowcount > 0
+    conn.close()
+
+    return success
+
+
+def get_exam_questions(exam_id: int):
+    """Return the full question rows attached to an exam, in order, each
+    annotated with its exam-specific "Marks override" (may be None)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT q.*, eq."Order" AS "Order", eq."Marks override" AS "Marks override"
+        FROM exam_questions eq
+        JOIN questions q ON q.id = eq.question_id
+        WHERE eq.exam_id = ?
+        ORDER BY eq."Order" IS NULL, eq."Order"
+    """, (exam_id,))
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+# Make sure all tables exist as soon as this module is imported.
 init_db()
