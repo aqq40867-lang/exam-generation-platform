@@ -1,5 +1,5 @@
 from nicegui import ui, app
-from database import get_question, delete_question, load_questions
+from database import get_question, delete_question, load_questions, get_question_parts
 
 
 def question_detail_page(question_id: int):
@@ -47,14 +47,29 @@ def question_detail_page(question_id: int):
             ui.label("Question Title:").classes("font-semibold text-grey-600")
             ui.label(question.get("Question", "N/A")).classes("text-lg mb-4")
             
-            # Main Question
-            ui.label("Main Question:").classes("font-semibold text-grey-600")
-            ui.label(question.get("Main question", "N/A")).classes("text-lg mb-4")
-            
+            # Module
+            ui.label("Module:").classes("font-semibold text-grey-600")
+            ui.label(question.get("Module") or "N/A").classes("text-lg mb-4")
+
+            # Description (optional shared context for the question)
+            ui.label("Description:").classes("font-semibold text-grey-600")
+            ui.label(question.get("Main question") or "N/A").classes("text-lg mb-4")
+
+            # Sub-questions (if this question was broken into parts)
+            parts = get_question_parts(question_id)
+            if parts:
+                ui.label("Sub-questions:").classes("font-semibold text-grey-600")
+                with ui.column().classes("w-full gap-2 mb-4"):
+                    for part in parts:
+                        with ui.row().classes("w-full items-start gap-3 border-b pb-2"):
+                            ui.label(f"({part.get('Label')})").classes("font-semibold w-10")
+                            ui.label(part.get("Description") or "—").classes("flex-grow")
+                            ui.label(f"[{part.get('Marks', 0)} marks]").classes("text-grey-600")
+
             # Marks
-            ui.label("Marks:").classes("font-semibold text-grey-600")
+            ui.label("Marks (total):" if parts else "Marks:").classes("font-semibold text-grey-600")
             ui.label(str(question.get("Marks", "N/A"))).classes("text-lg mb-4")
-            
+
             # Answer
             ui.label("Answer:").classes("font-semibold text-grey-600")
             with ui.card().classes("bg-grey-100 w-full p-3 mb-4"):

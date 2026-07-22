@@ -1,3 +1,5 @@
+import json
+
 from nicegui import ui, app
 from database import load_questions, delete_question
 
@@ -54,6 +56,7 @@ def question_list_page():
     columns = [
         {"name": "display_id", "label": "ID", "field": "display_id"},
         {"name": "Question", "label": "Question", "field": "Question"},
+        {"name": "Module", "label": "Module", "field": "Module", "filterValue": "All modules", "align": "center"},
         {"name": "Status", "label": "Status", "field": "Status"},
         {"name": "Version", "label": "Version", "field": "Version"},
         {"name": "Created by", "label": "Created By", "field": "Created by"},
@@ -62,13 +65,22 @@ def question_list_page():
         {"name": "actions", "label": "Actions", "field": "actions"},
     ]
 
-    rows = []
+    # Give every column an equal share of the table width (ID, Question,
+    # Module, Status, Version, Created By, Marks, Usage, Actions), so the
+    # header row is evenly split rather than sized purely by content.
+    equal_width = f"{100 / len(columns):.4f}%"
+    for col in columns:
+        col["style"] = f"width: {equal_width}"
+        col["headerStyle"] = f"width: {equal_width}"
+
+    all_rows = []
 
     for q in questions:
-        rows.append({
+        all_rows.append({
             "id": q["id"],  # real id, used internally for navigation
             "display_id": q["display_id"],
             "Question": q["Question"],
+            "Module": q.get("Module") or "—",
             "Status": q["Status"],
             "Version": q["Version"],
             "Created by": q["Created by"],
@@ -76,11 +88,59 @@ def question_list_page():
             "Usage": q["Usage"],
         })
 
+    # Modules filter: only lists modules that actually appear among this
+    # user's own questions, plus an "All modules" option. The dropdown lives
+    # inside the Module column's header cell (first row of the table)
+    # rather than as a separate button/control above the table.
+    modules_in_use = sorted({r["Module"] for r in all_rows if r["Module"] != "—"})
+    module_options = ["All modules"] + modules_in_use
+
     table = ui.table(
         columns=columns,
-        rows=rows,
+        rows=list(all_rows),
         row_key="id"
     ).classes("w-full")
+
+    # table-layout: fixed makes every column actually honour the equal
+    # "width" percentages set above, instead of auto-sizing to content.
+    table.props('table-style="table-layout: fixed; width: 100%"')
+
+    table.add_slot("header-cell-Module", f"""
+        <q-th :props="props" style="width: {equal_width}">
+            <div class="flex flex-center full-width">
+                <q-select
+                    dense
+                    outlined
+                    options-dense
+                    :options='{json.dumps(module_options)}'
+                    v-model="props.col.filterValue"
+                    style="width: 100%; max-width: 140px"
+                    @update:model-value="$parent.$emit('moduleFilter', $event)"
+                />
+            </div>
+        </q-th>
+    """)
+
+    def apply_module_filter(e):
+        selected = e.args
+
+        # Keep the Module column's filterValue in sync so the header
+        # dropdown keeps displaying whatever was just selected, instead of
+        # snapping back to "All modules" the next time the table re-renders.
+        # Mutate table.columns itself (not the local `columns` variable)
+        # since that's the actual object NiceGUI serializes back to the client.
+        for col in table.columns:
+            if col["name"] == "Module":
+                col["filterValue"] = selected
+                break
+
+        if selected == "All modules":
+            table.rows = list(all_rows)
+        else:
+            table.rows = [r for r in all_rows if r["Module"] == selected]
+        table.update()
+
+    table.on("moduleFilter", apply_module_filter)
 
     # Custom "Actions" cell: a dropdown (kebab) menu with View / Edit / Delete
     table.add_slot("body-cell-actions", r"""

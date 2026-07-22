@@ -14,6 +14,7 @@ import sqlite3
 import os
 import hashlib
 import secrets
+import string
 from datetime import datetime
 from typing import Optional, Tuple
 
@@ -56,7 +57,33 @@ def init_db():
             "Created by" TEXT,
             "Created at" TEXT,
             "Updated at" TEXT,
-            "Usage" INTEGER DEFAULT 0
+            "Usage" INTEGER DEFAULT 0,
+            "Module" TEXT
+        )
+    """)
+
+    # Migration: older DB files may already have a `questions` table that
+    # was created before the "Module" column existed. ALTER TABLE ... ADD
+    # COLUMN is a no-op-safe way to bring old databases up to date without
+    # losing data.
+    existing_columns = {row["name"] for row in cursor.execute("PRAGMA table_info(questions)")}
+    if "Module" not in existing_columns:
+        cursor.execute('ALTER TABLE questions ADD COLUMN "Module" TEXT')
+
+    # Sub-questions (子问题) belonging to a single "main question" row in
+    # `questions` (e.g. main question "A. Binary Tree" -> parts (a), (b), (c)).
+    # A main question may have zero sub-questions (plain question, uses the
+    # "Marks" column on `questions` directly) or many (in which case the
+    # main question's "Marks" is auto-computed as the sum of its parts).
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS question_parts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+            "Label" TEXT,
+            "Order" INTEGER,
+            "Description" TEXT,
+            "Marks" INTEGER NOT NULL DEFAULT 0,
+            "Answer" TEXT
         )
     """)
 
@@ -301,8 +328,8 @@ def add_question(question: dict) -> int:
     cursor.execute("""
         INSERT INTO questions (
             "Question", "Main question", "Marks", "Answer",
-            "Status", "Version", "Created by", "Created at", "Usage"
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "Status", "Version", "Created by", "Created at", "Usage", "Module"
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         question.get("Question"),
         question.get("Main question"),
@@ -313,6 +340,7 @@ def add_question(question: dict) -> int:
         question.get("Created by"),
         question.get("Created at"),
         question.get("Usage", 0),
+        question.get("Module"),
     ))
 
     conn.commit()
@@ -338,7 +366,8 @@ def update_question(question_id: int, updated_question: dict) -> bool:
             "Created by" = ?,
             "Created at" = ?,
             "Updated at" = ?,
-            "Usage" = ?
+            "Usage" = ?,
+            "Module" = ?
         WHERE id = ?
     """, (
         updated_question.get("Question"),
@@ -351,6 +380,7 @@ def update_question(question_id: int, updated_question: dict) -> bool:
         updated_question.get("Created at"),
         updated_question.get("Updated at"),
         updated_question.get("Usage", 0),
+        updated_question.get("Module"),
         question_id,
     ))
 
@@ -373,6 +403,125 @@ def delete_question(question_id: int) -> bool:
     conn.close()
 
     return success
+
+
+def list_modules():
+    """Return a sorted list of the distinct, non-empty course modules
+    ("Module", e.g. "CO923") already used across all questions.
+
+    Used to populate the module dropdown/combobox on the create/edit forms
+    and the filter dropdown on the question list page.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT DISTINCT "Module" FROM questions
+        WHERE "Module" IS NOT NULL AND TRIM("Module") != ''
+        ORDER BY "Module" COLLATE NOCASE
+    """)
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return [row["Module"] for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Question parts (子问题 / sub-questions)
+# ---------------------------------------------------------------------------
+# A "main question" (a row in `questions`, e.g. "A. Binary Tree") can be
+# broken down into several sub-questions, following the UK university
+# convention of labelling them (a), (b), (c), ... Each part carries its own
+# mark value; the parent question's total "Marks" is auto-computed as the
+# sum of all of its parts whenever it has at least one.
+
+def _label_for_index(index: int) -> str:
+    """Return the UK-style lower-case letter label for a 0-based index:
+    0 -> 'a', 1 -> 'b', ..., 25 -> 'z', 26 -> 'aa', etc. (Displayed in the
+    UI wrapped in parentheses, e.g. "(a)".)
+    """
+    letters = string.ascii_lowercase
+    label = ""
+    index += 1
+    while index > 0:
+        index, remainder = divmod(index - 1, 26)
+        label = letters[remainder] + label
+    return label
+
+
+def get_question_parts(question_id: int):
+    """Return all sub-questions for a main question, in order."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT * FROM question_parts
+        WHERE question_id = ?
+        ORDER BY "Order" IS NULL, "Order"
+    """, (question_id,))
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def replace_question_parts(question_id: int, parts: list) -> int:
+    """Replace all sub-questions belonging to `question_id` with `parts`.
+
+    `parts` is a list of dicts, each with (at least) "Description" (may be
+    empty/None) and "Marks" (int), in the desired display order. Labels
+    ((a), (b), (c)...) are (re)assigned automatically from the list order,
+    so callers never need to manage labels themselves.
+
+    The parent question's "Marks" column is then set to the sum of the
+    parts' marks (this is the auto total-marks calculation) and the new
+    total is returned. If `parts` is empty, the parent's "Marks" is left
+    untouched and 0 is returned.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM question_parts WHERE question_id = ?", (question_id,))
+
+    total_marks = 0
+    for order, part in enumerate(parts):
+        marks = int(part.get("Marks") or 0)
+        total_marks += marks
+        cursor.execute("""
+            INSERT INTO question_parts (question_id, "Label", "Order", "Description", "Marks", "Answer")
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            question_id,
+            _label_for_index(order),
+            order,
+            part.get("Description"),
+            marks,
+            part.get("Answer"),
+        ))
+
+    if parts:
+        cursor.execute('UPDATE questions SET "Marks" = ? WHERE id = ?', (total_marks, question_id))
+
+    conn.commit()
+    conn.close()
+
+    return total_marks
+
+
+def delete_question_parts(question_id: int) -> None:
+    """Delete all sub-questions for a main question (also happens
+    automatically via ON DELETE CASCADE when the question itself is
+    deleted, but exposed here for explicit use, e.g. converting a
+    multi-part question back into a plain one)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM question_parts WHERE question_id = ?", (question_id,))
+
+    conn.commit()
+    conn.close()
 
 
 # ---------------------------------------------------------------------------

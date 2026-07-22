@@ -2070,3 +2070,29 @@ Thought process
 另外还有个命令行脚本 seed_admin.py,用于部署最初没有任何 admin 账号时手动造第一个管理员(python seed_admin.py 用户名 密码)——你的 Luca 账号已经直接在数据库里改成了 admin,不需要再跑这个脚本。
 
 所有改动都过了语法检查,注册重名拦截、admin 种子等关键逻辑也在隔离环境里跑过实测。中途发现你的 Downloads 文件夹疑似在云同步,曾导致数据库写入被覆盖一次,建议留意这个风险。
+
+Thought process
+Thought process
+这次会话涉及的全部改动，都在 /Users/dv0881/Downloads/exam-generation-platform：
+
+database.py
+
+questions 表新增 Module 列（字段迁移，不影响已有数据）。
+新增 question_parts 表（question_id 外键关联 questions.id，ON DELETE CASCADE），存子问题。
+新增函数：replace_question_parts()（按英式习惯自动生成 (a)(b)(c) 标签、自动累加总分写回主题的 Marks）、get_question_parts()、delete_question_parts()、list_modules()。
+pages/create_question.py、pages/edit_question.py
+
+新增 Module 输入框（带已有模块自动补全）。
+新增"Sub-questions"动态列表：可增删子问题，每个子问题有描述+分值，总分自动计算并锁定主 Marks 字段（无子问题时可手动填分）。
+后来按你要求删掉了子问题区域上方的说明文字。
+pages/question_detail.py
+
+详情页展示 Module 字段和全部子问题（标签、描述、分值），以及自动汇总的总分。
+pages/question_list.py（改动最多，反复调整过）
+
+新增 Module 列，且把筛选下拉框直接嵌进该列表头（不是表格上方单独按钮）。
+修复过一次 bug：:options 用双引号包裹又内嵌 JSON 双引号，导致 Vue 模板解析失败、页面白屏——已改成单引号包裹。
+选中模块后下拉框会同步显示当前选中值（通过 table.columns 而非本地变量回写，确保真正推送到前端）。
+去掉了下拉框上方的"Module"文字。
+全部 9 列（ID、Question、Module、Status、Version、Created By、Marks、Usage、Actions）设置等宽（各占 100/9%），并加上 table-layout: fixed 让宽度真正生效；Module 下拉框改为撑满所在列（上限 140px），不再用固定像素宽度，避免选中不同长度内容时列宽跳动。
+所有改动都过了 py_compile 语法检查，数据库层额外做过增删子问题、自动算分、级联删除、模块迁移的实测。UI 部分因沙盒里装不了 nicegui，没法本地起服务验证，建议你重启 app 后刷新页面确认最终效果。
