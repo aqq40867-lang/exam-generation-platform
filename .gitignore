@@ -1,0 +1,6 @@
+pages/**/__pycache__/
+pages/**/__init__.py/
+.nicegui/
+__pycache__/
+DEVLOG.md
+DEVLOG_ENG.md
