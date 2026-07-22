@@ -22,6 +22,12 @@ def question_list_page():
             on_click=lambda: ui.navigate.to("/questions/new")
         )
 
+        ui.button(
+            "Export Exam Paper",
+            on_click=lambda: ui.navigate.to("/exams/export"),
+            color="secondary"
+        )
+
         if app.storage.user.get("role") == "admin":
             ui.button(
                 "User Management",

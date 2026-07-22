@@ -6,6 +6,7 @@ from pages.question_detail import question_detail_page
 from pages.create_question import create_question_page
 from pages.edit_question import edit_question_page
 from pages.admin_users import admin_users_page
+from pages.export_exam import export_exam_page
 
 
 # Home page
@@ -48,6 +49,12 @@ def question_detail(question_id: int):
 @ui.page('/questions/{question_id}/edit')
 def edit_question(question_id: int):
     edit_question_page(question_id)
+
+
+# Export exam paper (select questions, generate PDF via LaTeX)
+@ui.page('/exams/export')
+def export_exam():
+    export_exam_page()
 
 
 # User management (admin only)
