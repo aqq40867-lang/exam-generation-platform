@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>lboroexam.cls 文档解析</title>
+<style>
+  :root {
+    --bg: #f7f6f3;
+    --card: #ffffff;
+    --ink: #1f2328;
+    --muted: #6b7280;
+    --accent: #7c3aed;
+    --accent-soft: #efe8fd;
+    --line: #e5e2db;
+    --print: #0f766e;
+    --print-soft: #e6f5f3;
+    --create: #b45309;
+    --create-soft: #fdf1e0;
+    --code-bg: #1e1e2e;
+    --code-ink: #d6d6e0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.65;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 48px 24px 96px; }
+
+  header.hero {
+    text-align: center;
+    margin-bottom: 56px;
+  }
+  header.hero .tag {
+    display: inline-block;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 4px 14px;
+    border-radius: 999px;
+    margin-bottom: 16px;
+    letter-spacing: .02em;
+  }
+  header.hero h1 {
+    font-size: 34px;
+    margin: 0 0 12px;
+    font-weight: 800;
+  }
+  header.hero p {
+    color: var(--muted);
+    font-size: 16px;
+    max-width: 640px;
+    margin: 0 auto;
+  }
+
+  .filecards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 64px;
+  }
+  .filecard {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 20px;
+  }
+  .filecard .icon {
+    width: 36px; height: 36px;
+    border-radius: 9px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; font-weight: 700;
+    margin-bottom: 12px;
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .filecard h3 {
+    font-size: 14px;
+    margin: 0 0 6px;
+    font-family: "SFMono-Regular", Consolas, monospace;
+    word-break: break-word;
+  }
+  .filecard p {
+    font-size: 13px;
+    color: var(--muted);
+    margin: 0;
+  }
+
+  section.block { margin-bottom: 64px; }
+  section.block > .label {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 8px;
+  }
+  section.block h2 {
+    font-size: 24px;
+    margin: 0 0 8px;
+  }
+  section.block > .desc {
+    color: var(--muted);
+    font-size: 15px;
+    margin-bottom: 24px;
+    max-width: 720px;
+  }
+
+  .split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  .funcgroup {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .funcgroup .head {
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
+    font-size: 15px;
+    border-bottom: 1px solid var(--line);
+  }
+  .funcgroup.print .head { background: var(--print-soft); color: var(--print); }
+  .funcgroup.create .head { background: var(--create-soft); color: var(--create); }
+  .funcgroup .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .funcgroup ul { list-style: none; margin: 0; padding: 14px 20px 18px; }
+  .funcgroup li {
+    padding: 9px 0;
+    border-bottom: 1px dashed var(--line);
+    font-size: 13.5px;
+  }
+  .funcgroup li:last-child { border-bottom: none; }
+  .funcgroup code {
+    background: rgba(0,0,0,.05);
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-size: 12.5px;
+    color: var(--ink);
+  }
+  .funcgroup li .desc {
+    color: var(--muted);
+    display: block;
+    margin-top: 2px;
+  }
+
+  .stepflow {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 24px;
+  }
+  .step {
+    display: grid;
+    grid-template-columns: 32px 1fr;
+    gap: 14px;
+    padding: 12px 0;
+  }
+  .step:not(:last-child) { border-bottom: 1px solid var(--line); }
+  .step .num {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: white;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 14px;
+  }
+  .step .title { font-weight: 700; font-size: 14.5px; margin-bottom: 2px; }
+  .step .body { color: var(--muted); font-size: 13.5px; }
+  .step code {
+    background: rgba(0,0,0,.05);
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-size: 12.5px;
+    color: var(--ink);
+  }
+
+  .examplecard {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 24px;
+  }
+  .fieldgrid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+  .field {
+    background: #fafaf8;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 12px;
+  }
+  .field .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .field .v { font-size: 13.5px; font-weight: 600; margin-top: 2px; word-break: break-word; }
+  .field .v.placeholder { color: #b91c1c; font-weight: 500; }
+
+  .codebox {
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border-radius: 10px;
+    padding: 16px 18px;
+    font-family: "SFMono-Regular", Consolas, monospace;
+    font-size: 12.5px;
+    overflow-x: auto;
+    white-space: pre;
+    line-height: 1.7;
+  }
+  .codebox .c1 { color: #6a9955; }
+  .codebox .kw { color: #c586c0; }
+  .codebox .fn { color: #dcdcaa; }
+  .codebox .str { color: #ce9178; }
+
+  .warnbox {
+    margin-top: 16px;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    color: #991b1b;
+    border-radius: 10px;
+    padding: 12px 16px;
+    font-size: 13px;
+  }
+
+  .relation {
+    margin-top: 64px;
+    background: linear-gradient(135deg, var(--accent-soft), #fff);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 28px;
+    text-align: center;
+  }
+  .relation h2 { margin: 0 0 20px; font-size: 20px; }
+  .chain {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .chain .node {
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 18px;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: "SFMono-Regular", Consolas, monospace;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  }
+  .chain .arrow { color: var(--accent); font-size: 18px; }
+
+  footer {
+    text-align: center;
+    margin-top: 56px;
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+
+  @media (max-width: 720px) {
+    .filecards, .split, .fieldgrid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <span class="tag">LATEX DOCUMENT CLASS</span>
+    <h1>lboroexam.cls 考卷系统解析</h1>
+    <p>拉夫堡大学官方考卷 LaTeX 模板 · 基于 exam.cls 二次封装 · 支持 Gradescope 作答booklet</p>
+  </header>
+
+  <div class="filecards">
+    <div class="filecard">
+      <div class="icon">C</div>
+      <h3>lboroexam.cls</h3>
+      <p>核心文档类。定义页面格式、标题页生成、给分命令、Gradescope booklet 支持。v3.0 · 2022-10-15</p>
+    </div>
+    <div class="filecard">
+      <div class="icon">T</div>
+      <h3>Inperson Gradescope.tex</h3>
+      <p>线下考试(in-person)示例模板,调用 lboroexam.cls,含占位符待填与两道示例题。</p>
+    </div>
+    <div class="filecard">
+      <div class="icon">R</div>
+      <h3>LaTeX for Gradescope.txt</h3>
+      <p>Gradescope booklet 功能使用说明,四步流程指南。</p>
+    </div>
+  </div>
+
+  <section class="block">
+    <div class="label">Functions</div>
+    <h2>功能分类:试卷 print vs 题目 create</h2>
+    <p class="desc">lboroexam.cls 提供的命令可以分为两类:一类控制整份试卷的输出/打印方式,一类用于构建单道题目的内容与结构。</p>
+
+    <div class="split">
+      <div class="funcgroup print">
+        <div class="head"><span class="dot"></span>试卷 print · 整体输出控制</div>
+        <ul>
+          <li><code>\maketitle</code><span class="desc">自动生成标题页——模块代码、标题、时长、rubric、考试期换算、试卷编号</span></li>
+          <li>固定页面格式<span class="desc">A4 · 12pt · 边距 · 行距,用户不可更改</span></li>
+          <li>页眉页脚<span class="desc">首页/续页样式、Logo 插入、试卷编号 + 主考官/"continued..."</span></li>
+          <li><code>\printbooklet</code> / <code>\printanswers</code><span class="desc">切换输出模式:作答booklet / 答案版 / 纯题目版</span></li>
+          <li><code>\shadedsolutions</code><span class="desc">答案区域加阴影,区分是否打印答案</span></li>
+          <li><code>\placeanswerspace</code><span class="desc">统一输出一份带作答空间的题目副本</span></li>
+          <li><code>\printextraspace[n]</code><span class="desc">结尾追加 n 页空白作答页</span></li>
+          <li>自动补空白页<span class="desc">确保文档以空白页结尾,适配印刷装订</span></li>
+          <li>旧模板兼容检查<span class="desc">检测过时代码并警告/阻止编译</span></li>
+        </ul>
+      </div>
+
+      <div class="funcgroup create">
+        <div class="head"><span class="dot"></span>题目 create · 单题内容与结构</div>
+        <ul>
+          <li><code>bookletquestions</code><span class="desc">包裹全部题目,booklet 模式下题目的容器</span></li>
+          <li><code>\tmarks{分值}</code><span class="desc">文字后标注分数</span></li>
+          <li><code>\emarks{分值}</code><span class="desc">公式/显示等式后标注分数</span></li>
+          <li><code>subparts</code> / <code>tinysubparts</code><span class="desc">小题编号环境:竖排缩进 / 横排紧凑</span></li>
+          <li><code>\breakquestion</code><span class="desc">题目跨页时的提示与页脚处理</span></li>
+          <li><code>solution</code><span class="desc">写答案,配合 \shadedsolutions 显示</span></li>
+          <li><code>\answerspace{长度}</code><span class="desc">题目内插入指定高度的作答空白</span></li>
+          <li><code>\answerfill</code><span class="desc">清空当前页剩余空间作为作答区</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="label">Guide</div>
+    <h2>Gradescope Booklet 使用流程</h2>
+    <p class="desc">来自 LaTeX for Gradescope.txt 的四步说明——如何生成带作答空间的考试booklet。</p>
+
+    <div class="stepflow">
+      <div class="step">
+        <div class="num">1</div>
+        <div>
+          <div class="title">在导言区声明 <code>\printbooklet</code></div>
+          <div class="body">不声明则默认为纯题目版；<code>\printanswers</code> 则输出解答版。</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="num">2</div>
+        <div>
+          <div class="title">用 <code>bookletquestions</code> 环境包裹题目</div>
+          <div class="body">替代原本的 <code>questions</code> 环境；系统会将题目打印两次。</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="num">3</div>
+        <div>
+          <div class="title">题目内插入作答空间</div>
+          <div class="body"><code>\answerspace{长度}</code> 指定高度，或 <code>\answerfill</code> 占满剩余页面。</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="num">4</div>
+        <div>
+          <div class="title">结尾放置作答副本 + 额外空白页</div>
+          <div class="body"><code>\placeanswerspace</code> 输出带作答空间的题目；<code>\printextraspace[n]</code> 追加 n 页空白（默认 1）。</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="label">Example</div>
+    <h2>Inperson Gradescope.tex 示例解析</h2>
+    <p class="desc">该文件实际调用 lboroexam.cls 并演示 Gradescope 功能，但仍有若干占位符待填写。</p>
+
+    <div class="examplecard">
+      <div class="fieldgrid">
+        <div class="field"><div class="k">Module Code</div><div class="v placeholder">22MAA111（示例）</div></div>
+        <div class="field"><div class="k">Module Title</div><div class="v placeholder">MODULE TITLE（待填）</div></div>
+        <div class="field"><div class="k">Examiner</div><div class="v placeholder">Module leader（待填）</div></div>
+        <div class="field"><div class="k">Exam Period</div><div class="v">s1</div></div>
+        <div class="field"><div class="k">Exam Year</div><div class="v">2023</div></div>
+        <div class="field"><div class="k">Time Allowed</div><div class="v placeholder">In-Person Exam paper（待填具体时长）</div></div>
+      </div>
+
+      <div class="codebox"><span class="c1">% 关键设置</span>
+<span class="kw">\shadedsolutions</span>
+<span class="kw">\printbooklet</span>            <span class="c1">% 开启作答 booklet 模式</span>
+
+<span class="kw">\begin</span>{bookletquestions}
+  <span class="kw">\question</span>
+  <span class="kw">\begin</span>{parts}
+    <span class="kw">\part</span> Answer this easy question. <span class="fn">\tmarks</span>{5}
+    <span class="kw">\begin</span>{solution}
+      This is easy. <span class="fn">\tmarks</span>{5}
+    <span class="kw">\end</span>{solution}
+    <span class="fn">\answerspace</span>{10cm}
+  <span class="kw">\end</span>{parts}
+<span class="kw">\end</span>{bookletquestions}
+
+<span class="fn">\placeanswerspace</span>
+<span class="fn">\printextraspace</span>[2]</div>
+
+      <div class="warnbox">
+        ⚠ Rubric 中还有两处用 <code>&lt;...&gt;</code> 标出的待填空(计算器政策二选一、院系专属说明);编译前需确保同目录下存在 <code>logo.png/pdf</code>(cls 中硬编码调用 <code>\includegraphics{logo}</code>)。
+      </div>
+    </div>
+  </section>
+
+  <div class="relation">
+    <h2>三个文件的关系</h2>
+    <div class="chain">
+      <div class="node">lboroexam.cls<br><span style="font-weight:400;color:var(--muted);font-size:11px;">引擎 / 定义功能</span></div>
+      <div class="arrow">→</div>
+      <div class="node">LaTeX for Gradescope.txt<br><span style="font-weight:400;color:var(--muted);font-size:11px;">说明书 / 解释用法</span></div>
+      <div class="arrow">→</div>
+      <div class="node">Inperson Gradescope.tex<br><span style="font-weight:400;color:var(--muted);font-size:11px;">示例 / 实际调用</span></div>
+    </div>
+  </div>
+
+  <footer>lboroexam.cls v3.0 (2022/10/15) · Thomas Bartsch / Ian Thompson</footer>
+
+</div>
+</body>
+</html>

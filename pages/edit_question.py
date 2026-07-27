@@ -5,7 +5,7 @@ from database import (
     load_questions,
     get_question_parts,
     replace_question_parts,
-    list_modules,
+    get_teacher_modules,
 )
 from datetime import datetime
 import string
@@ -56,9 +56,20 @@ def edit_question_page(question_id: int):
     display_id = user_question_ids.index(question_id) + 1 if question_id in user_question_ids else question_id
 
     # Load existing sub-questions (if any) into the same in-memory shape
-    # used by the create page: a list of {"description": str, "marks": number}
+    # used by the create page: a list of {"description": str, "marks": number,
+    # "answer": str, "answer_space": number}
+    def _normalize_answer_space(value):
+        """Older rows (or legacy data) may not have a valid 'half'/'full'
+        value yet; fall back to 'half' in that case."""
+        return value if value in ("half", "full") else "half"
+
     parts_data = [
-        {"description": p.get("Description") or "", "marks": p.get("Marks") or 0}
+        {
+            "description": p.get("Description") or "",
+            "marks": p.get("Marks") or 0,
+            "answer": p.get("Answer") or "",
+            "answer_space": _normalize_answer_space(p.get("Answer space")),
+        }
         for p in get_question_parts(question_id)
     ]
 
@@ -77,13 +88,34 @@ def edit_question_page(question_id: int):
                 placeholder="Enter question title"
             ).classes("w-full mb-4")
 
-            # Module (course module association, e.g. "CO923")
+            # Module (course module association, e.g. "CO923"). Restricted to
+            # whatever courses this teacher has been assigned by an admin --
+            # teachers cannot type their own module code here.
             ui.label("Module").classes("font-semibold")
-            module_input = ui.input(
-                value=question.get("Module") or "",
-                placeholder="e.g. CO923",
-                autocomplete=list_modules(),
-            ).classes("w-full mb-4")
+            assigned_modules = get_teacher_modules(username)
+            existing_module = question.get("Module") or ""
+            # Keep the question's current module selectable even if it's no
+            # longer (or never was) part of this teacher's assigned list,
+            # so editing the question doesn't silently wipe out its module.
+            module_options = list(assigned_modules)
+            if existing_module and existing_module not in module_options:
+                module_options.append(existing_module)
+
+            if module_options:
+                module_input = ui.select(
+                    module_options,
+                    value=existing_module or None,
+                    label="",
+                ).classes("w-full mb-1")
+            else:
+                module_input = ui.select(
+                    [],
+                    label="",
+                ).classes("w-full mb-1").props("disable")
+                ui.label(
+                    "You have no modules assigned yet. Contact your admin to "
+                    "get modules assigned to you before selecting one here."
+                ).classes("text-sm text-negative mb-3")
 
             # Optional description / shared context for the main question
             ui.label("Description (optional)").classes("font-semibold")
@@ -94,8 +126,16 @@ def edit_question_page(question_id: int):
 
             ui.separator().classes("my-2")
 
-            # Sub-questions (子问题)
+            # Sub-questions (子小题). Each major question (大题) can be
+            # broken down into multiple sub-questions (子小题); each
+            # sub-question carries its own standard answer and a reserved
+            # blank-answer area on the exported paper.
             ui.label("Sub-questions").classes("font-semibold")
+            ui.label(
+                "Break this question down into sub-questions (a), (b), (c)... "
+                "Each sub-question should have its own standard answer and a "
+                "reserved blank area for the student to write their answer."
+            ).classes("text-sm text-grey-600 mb-1")
 
             parts_container = ui.column().classes("w-full gap-2")
 
@@ -105,9 +145,11 @@ def edit_question_page(question_id: int):
                     marks_input.value = total
                     marks_input.disable()
                     total_label.text = f"Total marks (auto-calculated from {len(parts_data)} sub-question(s)): {total}"
+                    answer_section.set_visibility(False)
                 else:
                     marks_input.enable()
                     total_label.text = ""
+                    answer_section.set_visibility(True)
 
             def render_parts():
                 parts_container.clear()
@@ -127,6 +169,18 @@ def edit_question_page(question_id: int):
 
                             return handler
 
+                        def make_answer_handler(idx):
+                            def handler(e):
+                                parts_data[idx]["answer"] = e.value
+
+                            return handler
+
+                        def make_answer_space_handler(idx):
+                            def handler(e):
+                                parts_data[idx]["answer_space"] = e.value or "half"
+
+                            return handler
+
                         def make_remove_handler(idx):
                             def handler():
                                 parts_data.pop(idx)
@@ -135,28 +189,48 @@ def edit_question_page(question_id: int):
 
                             return handler
 
-                        with ui.row().classes("w-full items-start gap-2 border-b pb-2"):
-                            ui.label(f"({_label_for_index(i)})").classes("font-semibold w-10 pt-3")
-                            ui.textarea(
-                                placeholder="Sub-question text (optional)",
-                                value=part.get("description", ""),
-                                on_change=make_desc_handler(i),
-                            ).classes("flex-grow").props("rows=2")
-                            ui.number(
-                                label="Marks",
-                                min=0,
-                                step=1,
-                                value=part.get("marks", 0),
-                                on_change=make_marks_handler(i),
-                            ).classes("w-28")
-                            ui.button(
-                                icon="delete",
-                                color="red",
-                                on_click=make_remove_handler(i),
-                            ).props("flat dense round")
+                        with ui.card().classes("w-full border pb-2").props("flat bordered"):
+                            with ui.row().classes("w-full items-start gap-2"):
+                                ui.label(f"({_label_for_index(i)})").classes("font-semibold w-10 pt-3")
+                                ui.textarea(
+                                    placeholder="Sub-question text (optional)",
+                                    value=part.get("description", ""),
+                                    on_change=make_desc_handler(i),
+                                ).classes("flex-grow").props("rows=2")
+                                ui.number(
+                                    label="Marks",
+                                    min=0,
+                                    step=1,
+                                    value=part.get("marks", 0),
+                                    on_change=make_marks_handler(i),
+                                ).classes("w-28")
+                                ui.button(
+                                    icon="delete",
+                                    color="red",
+                                    on_click=make_remove_handler(i),
+                                ).props("flat dense round")
+
+                            with ui.row().classes("w-full items-start gap-2 pl-12"):
+                                ui.textarea(
+                                    label="Standard answer",
+                                    placeholder="Standard answer for this sub-question",
+                                    value=part.get("answer", ""),
+                                    on_change=make_answer_handler(i),
+                                ).classes("flex-grow").props("rows=2")
+                                ui.select(
+                                    {"half": "Half page", "full": "Full page (new page)"},
+                                    label="Reserved answer space",
+                                    value=part.get("answer_space", "half"),
+                                    on_change=make_answer_space_handler(i),
+                                ).classes("w-56")
 
             def add_part():
-                parts_data.append({"description": "", "marks": 0})
+                parts_data.append({
+                    "description": "",
+                    "marks": 0,
+                    "answer": "",
+                    "answer_space": "half",
+                })
                 render_parts()
                 recalc_total()
 
@@ -174,17 +248,22 @@ def edit_question_page(question_id: int):
                 step=1
             ).classes("w-full mb-4")
 
+            # Answer (overall answer/marking notes for the question). This
+            # only applies to a plain question with no sub-questions: once
+            # sub-questions are added, the answer "lives" with each
+            # sub-question instead (see "Standard answer" above), so this
+            # section is hidden.
+            with ui.column().classes("w-full gap-0") as answer_section:
+                ui.label("Answer").classes("font-semibold")
+                answer_input = ui.textarea(
+                    value=question.get("Answer", ""),
+                    placeholder="Enter the answer"
+                ).classes("w-full mb-4").props("rows=3")
+
             # Render any pre-existing sub-questions and lock/compute Marks
-            # if there are any
+            # (and hide the overall Answer section) if there are any
             render_parts()
             recalc_total()
-
-            # Answer
-            ui.label("Answer").classes("font-semibold")
-            answer_input = ui.textarea(
-                value=question.get("Answer", ""),
-                placeholder="Enter the answer"
-            ).classes("w-full mb-4").props("rows=3")
 
             # Status (read-only display)
             ui.label(f"Status: {question.get('Status', 'Unknown')}").classes("text-sm text-grey-600 mb-4")
@@ -208,16 +287,19 @@ def edit_question_page(question_id: int):
                         ui.notify("Question title is required.", color="negative")
                         return
 
-                    if not answer:
+                    if not parts_data and not answer:
                         ui.notify("Answer is required.", color="negative")
                         return
 
-                    # Build sub-question payload (if any) and work out marks
+                    # Build sub-question payload (if any) and work out marks.
+                    # Each sub-question carries its own standard answer and a
+                    # reserved answer space ('half' or 'full' page).
                     parts_payload = [
                         {
                             "Description": (p.get("description") or "").strip() or None,
                             "Marks": int(p.get("marks") or 0),
-                            "Answer": None,
+                            "Answer": (p.get("answer") or "").strip() or None,
+                            "Answer space": p.get("answer_space") if p.get("answer_space") in ("half", "full") else "half",
                         }
                         for p in parts_data
                     ]
@@ -225,6 +307,9 @@ def edit_question_page(question_id: int):
                     if parts_payload:
                         if any(p["Marks"] <= 0 for p in parts_payload):
                             ui.notify("Each sub-question must have marks greater than 0.", color="negative")
+                            return
+                        if any(not p["Answer"] for p in parts_payload):
+                            ui.notify("Each sub-question must have a standard answer.", color="negative")
                             return
                         marks = sum(p["Marks"] for p in parts_payload)
                     else:
@@ -238,7 +323,7 @@ def edit_question_page(question_id: int):
                         "Question": title,
                         "Main question": main_text or None,
                         "Marks": marks,
-                        "Answer": answer,
+                        "Answer": answer or None,
                         "Status": question.get("Status", "Draft"),
                         "Version": question.get("Version", 1) + 1,  # Increment version
                         "Created by": question.get("Created by", username),

@@ -92,6 +92,12 @@ _FOOTER = r"""
 """
 
 
+# Layout rule (agreed with the user): each major question's sub-questions
+# are limited to at most 2 per printed page, so a page never carries more
+# than a question's own header/description plus 2 sub-questions.
+_MAX_SUB_QUESTIONS_PER_PAGE = 2
+
+
 def _render_question(number: int, question: dict, marks: int, parts: list) -> str:
     lines = []
     lines.append(
@@ -108,10 +114,37 @@ def _render_question(number: int, question: dict, marks: int, parts: list) -> st
     if parts:
         lines.append("")
         lines.append(r"\begin{itemize}")
-        for part in parts:
+
+        # Tracks how many sub-questions have been placed on the current
+        # page since the last forced page break, so we can enforce the
+        # "max 2 sub-questions per page" rule below.
+        items_since_break = 0
+
+        for idx, part in enumerate(parts):
+            is_last = (idx == len(parts) - 1)
+
             label = escape_latex(part.get("Label") or "")
             desc = escape_latex(part.get("Description") or "")
-            lines.append(r"\item[(%s)] %s" % (label, desc))
+            part_marks = part.get("Marks")
+            marks_suffix = r" \hfill \textbf{[%d]}" % part_marks if part_marks else ""
+            lines.append(r"\item[(%s)] %s%s" % (label, desc, marks_suffix))
+
+            # Reserved blank answer area for this sub-question: either
+            # roughly half a page of blank space inline, or a whole blank
+            # page to itself (forces a page break; the next content starts
+            # on the page after that).
+            answer_space = (part.get("Answer space") or "half").strip().lower()
+            if answer_space == "full":
+                lines.append(r"\newpage")
+                lines.append(r"\newpage")
+                items_since_break = 0
+            else:
+                lines.append(r"\vspace{0.5\textheight}")
+                items_since_break += 1
+                if items_since_break >= _MAX_SUB_QUESTIONS_PER_PAGE and not is_last:
+                    lines.append(r"\newpage")
+                    items_since_break = 0
+
         lines.append(r"\end{itemize}")
 
     lines.append("")

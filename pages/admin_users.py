@@ -1,5 +1,12 @@
 from nicegui import ui, app
-from database import list_users, delete_user, update_user_role
+from database import (
+    list_users,
+    delete_user,
+    update_user_role,
+    get_teacher_modules,
+    set_teacher_modules,
+    list_all_assignable_modules,
+)
 
 
 def admin_users_page():
@@ -50,9 +57,10 @@ def admin_users_page():
                 ):
                     ui.label("Username").classes("flex-1")
                     ui.label("Role").classes("w-40")
+                    ui.label("Modules").classes("flex-1")
                     ui.label("Created At").classes("flex-1")
                     ui.label("Last Login").classes("flex-1")
-                    ui.label("Actions").classes("w-16 text-center")
+                    ui.label("Actions").classes("w-24 text-center")
 
                 for u in users:
                     username = u["Username"]
@@ -116,6 +124,51 @@ def admin_users_page():
                             make_role_change_handler(username, role_select, confirmed_role)
                         )
 
+                        # Modules this teacher is allowed to author questions
+                        # for (drives the restricted Module dropdown on the
+                        # create/edit question pages).
+                        modules_label = ui.label(
+                            ", ".join(get_teacher_modules(username)) or "—"
+                        ).classes("flex-1 text-sm")
+
+                        def make_modules_edit_handler(username, modules_label):
+                            def open_edit_dialog():
+                                current_modules = get_teacher_modules(username)
+
+                                with ui.dialog() as dialog, ui.card().classes("w-96"):
+                                    ui.label(f"Assign modules to {username}").classes("font-semibold")
+                                    ui.label(
+                                        "Pick from existing course codes, or type a new one and "
+                                        "press Enter to add it."
+                                    ).classes("text-sm text-grey-600 mb-2")
+
+                                    modules_select = ui.select(
+                                        list_all_assignable_modules(),
+                                        value=current_modules,
+                                        multiple=True,
+                                        new_value_mode="add-unique",
+                                        label="Assigned modules",
+                                    ).classes("w-full").props("use-chips")
+
+                                    with ui.row().classes("gap-4 mt-4"):
+                                        ui.button("Cancel", on_click=dialog.close)
+
+                                        def save():
+                                            new_modules = modules_select.value or []
+                                            set_teacher_modules(username, new_modules)
+                                            modules_label.text = ", ".join(get_teacher_modules(username)) or "—"
+                                            ui.notify(
+                                                f"Updated modules for {username}.",
+                                                color="positive"
+                                            )
+                                            dialog.close()
+
+                                        ui.button("Save", color="primary", on_click=save)
+
+                                dialog.open()
+
+                            return open_edit_dialog
+
                         ui.label(u.get("Created at") or "").classes("flex-1")
                         ui.label(u.get("Last login at") or "").classes("flex-1")
 
@@ -152,7 +205,12 @@ def admin_users_page():
 
                             return delete_prompt
 
-                        with ui.row().classes("w-16 justify-center"):
+                        with ui.row().classes("w-24 justify-center gap-0"):
+                            ui.button(
+                                icon="school",
+                                on_click=make_modules_edit_handler(username, modules_label)
+                            ).props("flat dense round color=primary").tooltip("Assign modules")
+
                             ui.button(
                                 icon="delete",
                                 on_click=make_delete_handler(username)

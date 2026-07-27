@@ -83,9 +83,19 @@ def init_db():
             "Order" INTEGER,
             "Description" TEXT,
             "Marks" INTEGER NOT NULL DEFAULT 0,
-            "Answer" TEXT
+            "Answer" TEXT,
+            "Answer space" TEXT NOT NULL DEFAULT 'half'
         )
     """)
+
+    # Migration: older DB files may already have a `question_parts` table
+    # created before the "Answer space" column existed. It stores how much
+    # blank space to reserve for the student's answer to this sub-question
+    # on the exported paper: 'half' (half a page) or 'full' (a whole page,
+    # forces a page break).
+    existing_part_columns = {row["name"] for row in cursor.execute("PRAGMA table_info(question_parts)")}
+    if "Answer space" not in existing_part_columns:
+        cursor.execute("ALTER TABLE question_parts ADD COLUMN \"Answer space\" TEXT NOT NULL DEFAULT 'half'")
 
     # Accounts. Passwords are never stored in plain text: we keep a random
     # per-user salt plus a PBKDF2-SHA256 hash of (password + salt).
@@ -125,6 +135,20 @@ def init_db():
             "Order" INTEGER,
             "Marks override" INTEGER,
             UNIQUE(exam_id, question_id)
+        )
+    """)
+
+    # Which course modules (e.g. "CO923") each teacher is allowed to author
+    # questions for. Maintained by admins on the User Management page; the
+    # Module dropdown on the create/edit question pages only offers a
+    # teacher the modules they've been assigned here (they cannot type
+    # their own).
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS teacher_modules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            "Username" TEXT NOT NULL,
+            "Module" TEXT NOT NULL,
+            UNIQUE("Username", "Module")
         )
     """)
 
@@ -428,6 +452,72 @@ def list_modules():
 
 
 # ---------------------------------------------------------------------------
+# Teacher <-> Module assignments (teacher_modules)
+# ---------------------------------------------------------------------------
+# Which course modules a teacher is allowed to author questions for. This is
+# assigned by admins (User Management page); the create/edit question pages
+# then restrict a teacher's Module dropdown to only these, so teachers can't
+# type an arbitrary course code themselves.
+
+def get_teacher_modules(username: str):
+    """Return the sorted list of modules a teacher has been assigned."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        'SELECT "Module" FROM teacher_modules WHERE "Username" = ? ORDER BY "Module" COLLATE NOCASE',
+        (username,),
+    )
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return [row["Module"] for row in rows]
+
+
+def set_teacher_modules(username: str, modules: list) -> None:
+    """Replace the full set of modules assigned to a teacher with `modules`
+    (a list of strings). Blank/duplicate entries are ignored."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute('DELETE FROM teacher_modules WHERE "Username" = ?', (username,))
+
+    seen = set()
+    for module in modules:
+        module = (module or "").strip()
+        if not module or module.lower() in seen:
+            continue
+        seen.add(module.lower())
+        cursor.execute(
+            'INSERT INTO teacher_modules ("Username", "Module") VALUES (?, ?)',
+            (username, module),
+        )
+
+    conn.commit()
+    conn.close()
+
+
+def list_all_assignable_modules():
+    """Return a sorted list of every module code known to the system so far
+    (already used on a question, or already assigned to some teacher), to
+    use as suggestions when an admin assigns modules to a teacher."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT "Module" FROM questions WHERE "Module" IS NOT NULL AND TRIM("Module") != ''
+        UNION
+        SELECT "Module" FROM teacher_modules
+    """)
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return sorted({row["Module"] for row in rows}, key=str.lower)
+
+
+# ---------------------------------------------------------------------------
 # Question parts (子问题 / sub-questions)
 # ---------------------------------------------------------------------------
 # A "main question" (a row in `questions`, e.g. "A. Binary Tree") can be
@@ -471,9 +561,12 @@ def replace_question_parts(question_id: int, parts: list) -> int:
     """Replace all sub-questions belonging to `question_id` with `parts`.
 
     `parts` is a list of dicts, each with (at least) "Description" (may be
-    empty/None) and "Marks" (int), in the desired display order. Labels
-    ((a), (b), (c)...) are (re)assigned automatically from the list order,
-    so callers never need to manage labels themselves.
+    empty/None), "Marks" (int), "Answer" (the sub-question's standard
+    answer) and "Answer space" ('half' or 'full' -- how much blank space to
+    reserve for the student's answer on the exported paper; 'full' forces a
+    page break so the answer gets a whole page to itself), in the desired
+    display order. Labels ((a), (b), (c)...) are (re)assigned automatically
+    from the list order, so callers never need to manage labels themselves.
 
     The parent question's "Marks" column is then set to the sum of the
     parts' marks (this is the auto total-marks calculation) and the new
@@ -490,8 +583,8 @@ def replace_question_parts(question_id: int, parts: list) -> int:
         marks = int(part.get("Marks") or 0)
         total_marks += marks
         cursor.execute("""
-            INSERT INTO question_parts (question_id, "Label", "Order", "Description", "Marks", "Answer")
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO question_parts (question_id, "Label", "Order", "Description", "Marks", "Answer", "Answer space")
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             question_id,
             _label_for_index(order),
@@ -499,6 +592,7 @@ def replace_question_parts(question_id: int, parts: list) -> int:
             part.get("Description"),
             marks,
             part.get("Answer"),
+            part.get("Answer space") if part.get("Answer space") in ("half", "full") else "half",
         ))
 
     if parts:
