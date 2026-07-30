@@ -12,8 +12,13 @@ def question_list_page():
         return
 
     username = app.storage.user["username"]
+    role = app.storage.user.get("role", "teacher")
 
     ui.label(f"Welcome, {username}").classes("text-2xl font-bold")
+    # Read-only: a teacher can see what their own role is, but there's no
+    # control here to change it -- only an admin can do that, from the User
+    # Management page.
+    ui.label(f"Role: {role}").classes("text-sm text-grey-600 mb-2")
 
     with ui.row():
 

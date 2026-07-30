@@ -75,65 +75,77 @@ def admin_users_page():
 
                 for u in users:
                     username = u["Username"]
+                    is_protected = bool(u.get("Protected"))
 
                     with ui.row().classes(
                         "w-full items-center border-b py-2"
                     ):
                         ui.label(username).classes("flex-1")
 
-                        role_select = ui.select(
-                            ["teacher", "admin"],
-                            value=u["Role"]
-                        ).classes("w-40")
+                        if is_protected:
+                            # This is the top-level admin account: its role is
+                            # permanently locked (always "admin"), so there's
+                            # no editable dropdown here at all -- just a
+                            # static, obviously-not-clickable indicator.
+                            with ui.row().classes("w-40 items-center gap-1").tooltip(
+                                "Protected account — role is permanently locked as admin."
+                            ):
+                                ui.icon("lock").classes("text-grey-500")
+                                ui.label("admin").classes("font-medium")
+                        else:
+                            role_select = ui.select(
+                                ["teacher", "admin"],
+                                value=u["Role"]
+                            ).classes("w-40")
 
-                        # Tracks the last *confirmed* role for this row, so we
-                        # know what to prompt about / revert to on cancel.
-                        confirmed_role = {"value": u["Role"]}
+                            # Tracks the last *confirmed* role for this row, so we
+                            # know what to prompt about / revert to on cancel.
+                            confirmed_role = {"value": u["Role"]}
 
-                        def make_role_change_handler(username, role_select, confirmed_role):
-                            def on_role_change():
-                                new_role = role_select.value
-                                old_role = confirmed_role["value"]
+                            def make_role_change_handler(username, role_select, confirmed_role):
+                                def on_role_change():
+                                    new_role = role_select.value
+                                    old_role = confirmed_role["value"]
 
-                                if new_role == old_role:
-                                    return
+                                    if new_role == old_role:
+                                        return
 
-                                with ui.dialog() as dialog, ui.card():
-                                    ui.label(
-                                        f"Change {username}'s role to '{new_role}'?"
-                                    )
-
-                                    with ui.row().classes("gap-4 mt-4"):
-
-                                        def cancel():
-                                            # Revert the dropdown without
-                                            # touching the database.
-                                            role_select.value = old_role
-                                            dialog.close()
-
-                                        def confirm():
-                                            update_user_role(username, new_role)
-                                            confirmed_role["value"] = new_role
-                                            ui.notify(
-                                                f"{username}'s role updated to {new_role}.",
-                                                color="positive"
-                                            )
-                                            dialog.close()
-
-                                        ui.button("Cancel", on_click=cancel)
-                                        ui.button(
-                                            "Confirm",
-                                            color="primary",
-                                            on_click=confirm
+                                    with ui.dialog() as dialog, ui.card():
+                                        ui.label(
+                                            f"Change {username}'s role to '{new_role}'?"
                                         )
 
-                                dialog.open()
+                                        with ui.row().classes("gap-4 mt-4"):
 
-                            return on_role_change
+                                            def cancel():
+                                                # Revert the dropdown without
+                                                # touching the database.
+                                                role_select.value = old_role
+                                                dialog.close()
 
-                        role_select.on_value_change(
-                            make_role_change_handler(username, role_select, confirmed_role)
-                        )
+                                            def confirm():
+                                                update_user_role(username, new_role)
+                                                confirmed_role["value"] = new_role
+                                                ui.notify(
+                                                    f"{username}'s role updated to {new_role}.",
+                                                    color="positive"
+                                                )
+                                                dialog.close()
+
+                                            ui.button("Cancel", on_click=cancel)
+                                            ui.button(
+                                                "Confirm",
+                                                color="primary",
+                                                on_click=confirm
+                                            )
+
+                                    dialog.open()
+
+                                return on_role_change
+
+                            role_select.on_value_change(
+                                make_role_change_handler(username, role_select, confirmed_role)
+                            )
 
                         # Modules this teacher is allowed to author questions
                         # for (drives the restricted Module dropdown on the
@@ -290,12 +302,19 @@ def admin_users_page():
                                         ui.button("Cancel", on_click=dialog.close)
 
                                         def confirm():
-                                            delete_user(username)
+                                            deleted = delete_user(username)
                                             dialog.close()
-                                            ui.notify(
-                                                f"Account '{username}' deleted.",
-                                                color="positive"
-                                            )
+                                            if deleted:
+                                                ui.notify(
+                                                    f"Account '{username}' deleted.",
+                                                    color="positive"
+                                                )
+                                            else:
+                                                ui.notify(
+                                                    f"'{username}' is a protected account and "
+                                                    "cannot be deleted.",
+                                                    color="negative"
+                                                )
                                             refresh_table()
 
                                         ui.button("Delete", color="red", on_click=confirm)
@@ -305,9 +324,14 @@ def admin_users_page():
                             return delete_prompt
 
                         with ui.row().classes("w-24 justify-center gap-0"):
-                            ui.button(
-                                icon="delete",
-                                on_click=make_delete_handler(username)
-                            ).props("flat dense round color=red")
+                            if is_protected:
+                                ui.button(icon="lock").props(
+                                    "flat dense round color=grey disable"
+                                ).tooltip("Protected account — cannot be deleted.")
+                            else:
+                                ui.button(
+                                    icon="delete",
+                                    on_click=make_delete_handler(username)
+                                ).props("flat dense round color=red")
 
         refresh_table()

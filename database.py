@@ -107,9 +107,20 @@ def init_db():
             "Salt" TEXT NOT NULL,
             "Role" TEXT NOT NULL DEFAULT 'teacher',
             "Created at" TEXT,
-            "Last login at" TEXT
+            "Last login at" TEXT,
+            "Protected" INTEGER NOT NULL DEFAULT 0
         )
     """)
+
+    # Migration: older DB files may already have a `users` table created
+    # before the "Protected" column existed. A protected account is a
+    # top-level admin whose role can never be changed or deleted by anyone
+    # (including other admins) through the app -- it's the one account
+    # guaranteed to always stay admin, so nobody can ever lock everyone else
+    # out by accidentally demoting/deleting the last admin.
+    existing_user_columns = {row["name"] for row in cursor.execute("PRAGMA table_info(users)")}
+    if "Protected" not in existing_user_columns:
+        cursor.execute('ALTER TABLE users ADD COLUMN "Protected" INTEGER NOT NULL DEFAULT 0')
 
     # Exams / exam papers.
     cursor.execute("""
@@ -180,9 +191,14 @@ def _hash_password(password: str, salt: Optional[str] = None) -> Tuple[str, str]
     return digest.hex(), salt
 
 
-def create_user(username: str, password: str, role: str = "teacher") -> Optional[int]:
+def create_user(username: str, password: str, role: str = "teacher", protected: bool = False) -> Optional[int]:
     """Create a new user with a hashed password. Returns new id, or None if
-    the username is already taken."""
+    the username is already taken.
+
+    `protected=True` marks this as a top-level admin account: its role can
+    never be changed and the account can never be deleted through the app
+    (see `update_user_role` / `delete_user`), guaranteeing there's always at
+    least one admin who can manage everyone else's role."""
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -191,9 +207,9 @@ def create_user(username: str, password: str, role: str = "teacher") -> Optional
 
     try:
         cursor.execute("""
-            INSERT INTO users ("Username", "Password hash", "Salt", "Role", "Created at")
-            VALUES (?, ?, ?, ?, ?)
-        """, (username, password_hash, salt, role, now))
+            INSERT INTO users ("Username", "Password hash", "Salt", "Role", "Created at", "Protected")
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (username, password_hash, salt, role, now, 1 if protected else 0))
         conn.commit()
         new_id = cursor.lastrowid
     except sqlite3.IntegrityError:
@@ -269,12 +285,17 @@ def update_user_password(username: str, new_password: str) -> bool:
 
 
 def update_user_role(username: str, new_role: str) -> bool:
-    """Change a user's role. Returns True if a row was updated."""
+    """Change a user's role. Returns True if a row was updated.
+
+    Refuses (returns False, no-op) if the account is protected -- a
+    protected account's role is permanently locked as whatever it was
+    created with (always "admin" in practice), so it can't be demoted by
+    another admin, accidentally or otherwise."""
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute(
-        'UPDATE users SET "Role" = ? WHERE "Username" = ?',
+        'UPDATE users SET "Role" = ? WHERE "Username" = ? AND "Protected" = 0',
         (new_role, username),
     )
 
@@ -286,11 +307,13 @@ def update_user_role(username: str, new_role: str) -> bool:
 
 
 def delete_user(username: str) -> bool:
-    """Delete a user by username. Returns True if a row was deleted."""
+    """Delete a user by username. Returns True if a row was deleted.
+
+    Refuses (returns False, no-op) if the account is protected."""
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute('DELETE FROM users WHERE "Username" = ?', (username,))
+    cursor.execute('DELETE FROM users WHERE "Username" = ? AND "Protected" = 0', (username,))
 
     conn.commit()
     success = cursor.rowcount > 0
@@ -299,12 +322,33 @@ def delete_user(username: str) -> bool:
     return success
 
 
-def list_users():
-    """Return all users (without password hash/salt) as a list of dicts."""
+def is_protected_user(username: str) -> bool:
+    """Return True if this account's role/existence is locked (see
+    `update_user_role` / `delete_user`)."""
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute('SELECT id, "Username", "Role", "Created at", "Last login at" FROM users')
+    cursor.execute('SELECT "Protected" FROM users WHERE "Username" = ?', (username,))
+    row = cursor.fetchone()
+
+    conn.close()
+
+    return bool(row and row["Protected"])
+
+
+def list_users():
+    """Return all users (without password hash/salt) as a list of dicts.
+
+    Protected accounts (the top-level admin) are sorted first, so they
+    always show up at the top of the User Management list regardless of
+    when they were created; everyone else follows in creation order."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        'SELECT id, "Username", "Role", "Created at", "Last login at", "Protected" '
+        'FROM users ORDER BY "Protected" DESC, id ASC'
+    )
     rows = cursor.fetchall()
 
     conn.close()
