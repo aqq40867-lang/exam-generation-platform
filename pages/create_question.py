@@ -27,11 +27,11 @@ def create_question_page():
 
     # In-memory state for the dynamic list of sub-questions (parts). Each
     # entry is a plain dict {"description": str, "marks": number,
-    # "answer": str, "answer_space": number}; the container is cleared and
-    # rebuilt from this list on every change, so labels ((a), (b), (c)...)
-    # always reflect the current order. Every sub-question carries its own
-    # standard answer plus a reserved blank-answer area (number of blank
-    # lines left for the student on the exported paper).
+    # "answer": str}; the container is cleared and rebuilt from this list on
+    # every change, so labels ((a), (b), (c)...) always reflect the current
+    # order. Every sub-question carries its own standard answer; the
+    # reserved answer space on the exported paper always defaults to
+    # "half" (a half page) for new questions.
     parts_data = []
 
     with ui.column().classes("w-full max-w-4xl mx-auto p-8"):
@@ -125,12 +125,6 @@ def create_question_page():
 
                             return handler
 
-                        def make_answer_space_handler(idx):
-                            def handler(e):
-                                parts_data[idx]["answer_space"] = e.value or "half"
-
-                            return handler
-
                         def make_remove_handler(idx):
                             def handler():
                                 parts_data.pop(idx)
@@ -167,19 +161,12 @@ def create_question_page():
                                     value=part.get("answer", ""),
                                     on_change=make_answer_handler(i),
                                 ).classes("flex-grow").props("rows=2")
-                                ui.select(
-                                    {"half": "Half page", "full": "Full page (new page)"},
-                                    label="Reserved answer space",
-                                    value=part.get("answer_space", "half"),
-                                    on_change=make_answer_space_handler(i),
-                                ).classes("w-56")
 
             def add_part():
                 parts_data.append({
                     "description": "",
                     "marks": 0,
                     "answer": "",
-                    "answer_space": "half",
                 })
                 render_parts()
                 recalc_total()
@@ -229,14 +216,15 @@ def create_question_page():
                         return
 
                     # Build sub-question payload (if any) and work out marks.
-                    # Each sub-question carries its own standard answer and a
-                    # reserved answer space ('half' or 'full' page).
+                    # Each sub-question carries its own standard answer; the
+                    # reserved answer space always defaults to 'half' for
+                    # questions created here.
                     parts_payload = [
                         {
                             "Description": (p.get("description") or "").strip() or None,
                             "Marks": int(p.get("marks") or 0),
                             "Answer": (p.get("answer") or "").strip() or None,
-                            "Answer space": p.get("answer_space") if p.get("answer_space") in ("half", "full") else "half",
+                            "Answer space": "half",
                         }
                         for p in parts_data
                     ]
