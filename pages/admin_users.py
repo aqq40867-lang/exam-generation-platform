@@ -5,8 +5,19 @@ from database import (
     update_user_role,
     get_teacher_modules,
     set_teacher_modules,
-    list_all_assignable_modules,
 )
+
+
+def _format_modules_summary(modules: list, limit: int = 4) -> str:
+    """Compact display string for a teacher's module list. Full list is shown
+    up to `limit` entries; beyond that it's truncated with a "+N more" tail
+    (the full list is still available via the row's tooltip) so a teacher
+    with dozens of modules doesn't blow out the table layout."""
+    if not modules:
+        return "—"
+    if len(modules) <= limit:
+        return ", ".join(modules)
+    return f"{', '.join(modules[:limit])} +{len(modules) - limit} more"
 
 
 def admin_users_page():
@@ -126,37 +137,121 @@ def admin_users_page():
 
                         # Modules this teacher is allowed to author questions
                         # for (drives the restricted Module dropdown on the
-                        # create/edit question pages).
-                        modules_label = ui.label(
-                            ", ".join(get_teacher_modules(username)) or "—"
-                        ).classes("flex-1 text-sm")
+                        # create/edit question pages). Shown alongside an
+                        # explicit "Edit" button so it's clear this can be
+                        # changed, not just viewed.
+                        with ui.row().classes("flex-1 items-center gap-1 flex-nowrap"):
+                            teacher_modules_now = get_teacher_modules(username)
+                            modules_label = ui.label(
+                                _format_modules_summary(teacher_modules_now)
+                            ).classes("text-sm")
+                            if teacher_modules_now:
+                                modules_label.tooltip(", ".join(teacher_modules_now))
+
+                            modules_edit_button = ui.button(
+                                "Edit",
+                                icon="edit",
+                            ).props("flat dense size=sm color=primary").tooltip(
+                                "Assign course modules to this teacher"
+                            )
 
                         def make_modules_edit_handler(username, modules_label):
                             def open_edit_dialog():
-                                current_modules = get_teacher_modules(username)
+                                # Local, in-memory working copy of this teacher's module
+                                # list for the lifetime of the dialog. Each module is
+                                # added one at a time (its own entity/row, with its own
+                                # remove button) rather than all typed together into one
+                                # field, so it's clear what's already assigned and what's
+                                # being added.
+                                modules_data = list(get_teacher_modules(username))
 
-                                with ui.dialog() as dialog, ui.card().classes("w-96"):
+                                with ui.dialog() as dialog, ui.card().classes("w-96 max-h-[85vh]"):
                                     ui.label(f"Assign modules to {username}").classes("font-semibold")
                                     ui.label(
-                                        "Pick from existing course codes, or type a new one and "
-                                        "press Enter to add it."
+                                        "Add one course module at a time. Already-assigned "
+                                        "modules are listed below — remove one with its x "
+                                        "button, or add another at any time. No limit on how "
+                                        "many a teacher can have (works fine with dozens)."
                                     ).classes("text-sm text-grey-600 mb-2")
 
-                                    modules_select = ui.select(
-                                        list_all_assignable_modules(),
-                                        value=current_modules,
-                                        multiple=True,
-                                        new_value_mode="add-unique",
-                                        label="Assigned modules",
-                                    ).classes("w-full").props("use-chips")
+                                    # Fixed-height, independently scrolling list so that even
+                                    # with a large number of modules (tens to ~99), the Add
+                                    # input and Save/Cancel buttons stay put and reachable
+                                    # instead of the dialog growing off-screen.
+                                    modules_list = ui.column().classes(
+                                        "w-full gap-1 max-h-64 overflow-y-auto pr-1"
+                                    )
+
+                                    def render_modules_list():
+                                        modules_list.clear()
+                                        with modules_list:
+                                            if not modules_data:
+                                                ui.label("No modules assigned yet.").classes(
+                                                    "text-sm text-grey-500 italic"
+                                                )
+                                            for i, module in enumerate(modules_data):
+
+                                                def make_remove_handler(idx):
+                                                    def handler():
+                                                        modules_data.pop(idx)
+                                                        render_modules_list()
+
+                                                    return handler
+
+                                                with ui.row().classes(
+                                                    "w-full items-center justify-between border rounded px-3 py-1"
+                                                ):
+                                                    ui.label(module)
+                                                    ui.button(
+                                                        icon="close",
+                                                        on_click=make_remove_handler(i),
+                                                    ).props("flat dense round size=sm color=red")
+
+                                    render_modules_list()
+
+                                    with ui.row().classes("w-full items-center gap-2 mt-2"):
+                                        new_module_input = ui.input(
+                                            placeholder="e.g. CO923"
+                                        ).classes("flex-grow")
+
+                                        def add_module():
+                                            new_module = (new_module_input.value or "").strip()
+                                            if not new_module:
+                                                return
+                                            if any(
+                                                new_module.lower() == m.lower()
+                                                for m in modules_data
+                                            ):
+                                                ui.notify(
+                                                    f'"{new_module}" is already in the list.',
+                                                    color="warning"
+                                                )
+                                                new_module_input.value = ""
+                                                return
+                                            modules_data.append(new_module)
+                                            new_module_input.value = ""
+                                            render_modules_list()
+                                            new_module_input.run_method("focus")
+
+                                        new_module_input.on(
+                                            "keydown.enter",
+                                            lambda: add_module(),
+                                        )
+
+                                        ui.button(
+                                            "Add",
+                                            icon="add",
+                                            on_click=add_module,
+                                        )
 
                                     with ui.row().classes("gap-4 mt-4"):
                                         ui.button("Cancel", on_click=dialog.close)
 
                                         def save():
-                                            new_modules = modules_select.value or []
-                                            set_teacher_modules(username, new_modules)
-                                            modules_label.text = ", ".join(get_teacher_modules(username)) or "—"
+                                            set_teacher_modules(username, modules_data)
+                                            updated_modules = get_teacher_modules(username)
+                                            modules_label.text = _format_modules_summary(updated_modules)
+                                            modules_label.tooltip(", ".join(updated_modules))
                                             ui.notify(
                                                 f"Updated modules for {username}.",
                                                 color="positive"
@@ -168,6 +263,10 @@ def admin_users_page():
                                 dialog.open()
 
                             return open_edit_dialog
+
+                        modules_edit_button.on_click(
+                            make_modules_edit_handler(username, modules_label)
+                        )
 
                         ui.label(u.get("Created at") or "").classes("flex-1")
                         ui.label(u.get("Last login at") or "").classes("flex-1")
@@ -206,11 +305,6 @@ def admin_users_page():
                             return delete_prompt
 
                         with ui.row().classes("w-24 justify-center gap-0"):
-                            ui.button(
-                                icon="school",
-                                on_click=make_modules_edit_handler(username, modules_label)
-                            ).props("flat dense round color=primary").tooltip("Assign modules")
-
                             ui.button(
                                 icon="delete",
                                 on_click=make_delete_handler(username)
