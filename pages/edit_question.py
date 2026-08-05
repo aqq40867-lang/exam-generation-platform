@@ -278,7 +278,7 @@ def edit_question_page(question_id: int):
                     """Save the updated question."""
 
                     title = title_input.value.strip()
-                    module = (module_input.value or "").strip()
+                    module = (module_input.value or "").strip().upper()
                     main_text = (main_text_input.value or "").strip()
                     answer = answer_input.value.strip()
 

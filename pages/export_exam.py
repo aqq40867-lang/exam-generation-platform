@@ -60,6 +60,7 @@ def export_exam_page():
 
         status_label = ui.label().classes("text-lg font-bold")
         generate_btn = None  # assigned below, referenced by refresh_status()
+        generate_tooltip = None  # assigned below, explains why the button is disabled
         download_tex_btn = None
 
         def selected_total() -> int:
@@ -69,6 +70,28 @@ def export_exam_page():
                 if widget:
                     total += int(widget["marks_input"].value or 0)
             return total
+
+        def disabled_reason(count: int, total: int, target: int) -> str:
+            """Human-readable reason the Generate button is currently
+            disabled, or '' if it isn't. Shown as a tooltip on the button
+            (a disabled button in Quasar has pointer-events disabled, so
+            the tooltip is attached to a wrapper div around it instead --
+            see how generate_btn is created below)."""
+            if count == 0:
+                return "Select at least one question first."
+            if total < target:
+                return (
+                    f"Selected marks ({total}) are {target - total} short of "
+                    f"the full marks total ({target}). Select more questions "
+                    f"or increase their marks in this exam."
+                )
+            if total > target:
+                return (
+                    f"Selected marks ({total}) are {total - target} over the "
+                    f"full marks total ({target}). Remove a question or lower "
+                    f"some marks in this exam."
+                )
+            return ""
 
         def refresh_status():
             total = selected_total()
@@ -84,6 +107,10 @@ def export_exam_page():
 
             if generate_btn is not None:
                 generate_btn.enable() if ok else generate_btn.disable()
+            if generate_tooltip is not None:
+                reason = disabled_reason(count, total, target)
+                generate_tooltip.set_text(reason)
+                generate_tooltip.set_visibility(bool(reason))
             if download_tex_btn is not None:
                 download_tex_btn.enable() if count > 0 else download_tex_btn.disable()
 
@@ -165,10 +192,26 @@ def export_exam_page():
 
         # -- Generate ------------------------------------------------------
         with ui.row().classes("w-full items-center gap-4 mt-2"):
-            generate_btn = ui.button("Generate & Download PDF", color="primary")
+            # The button itself is wrapped in a plain div. A disabled Quasar
+            # button has pointer-events disabled, so it never sees mouse
+            # hover and a tooltip attached directly to it would never show.
+            # The wrapper div isn't disabled, so hovering anywhere over the
+            # button's footprint still reaches it and triggers the tooltip.
+            with ui.element("div") as generate_wrapper:
+                generate_btn = ui.button("Generate & Download PDF", color="primary")
+            generate_tooltip = (
+                ui.tooltip("")
+                .props(f'target="#{generate_wrapper.html_id}"')
+                .style("font-size: 14px")
+            )
             download_tex_btn = ui.button("Download LaTeX Source (.tex)", color="secondary")
             generate_btn.disable()
             download_tex_btn.disable()
+
+        # Populate the tooltip's initial text/visibility now that
+        # generate_tooltip exists (the first refresh_status() call above
+        # ran before this button block, when it was still None).
+        refresh_status()
 
         def gather_selected():
             """Return (name, description, total, questions_with_marks) built

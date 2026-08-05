@@ -227,11 +227,11 @@ def admin_users_page():
                                         ).classes("flex-grow")
 
                                         def add_module():
-                                            new_module = (new_module_input.value or "").strip()
+                                            new_module = (new_module_input.value or "").strip().upper()
                                             if not new_module:
                                                 return
                                             if any(
-                                                new_module.lower() == m.lower()
+                                                new_module == m
                                                 for m in modules_data
                                             ):
                                                 ui.notify(

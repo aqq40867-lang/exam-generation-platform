@@ -133,7 +133,7 @@ def _render_question(number: int, question: dict, marks: int, parts: list) -> st
             # roughly half a page of blank space inline, or a whole blank
             # page to itself (forces a page break; the next content starts
             # on the page after that).
-            answer_space = (part.get("Answer space") or "half").strip().lower()
+            answer_space = str(part.get("Answer space") or "half").strip().lower()
             if answer_space == "full":
                 lines.append(r"\newpage")
                 lines.append(r"\newpage")

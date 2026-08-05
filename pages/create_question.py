@@ -202,7 +202,7 @@ def create_question_page():
                     """Save the new question."""
 
                     title = title_input.value.strip()
-                    module = (module_input.value or "").strip()
+                    module = (module_input.value or "").strip().upper()
                     main_text = (main_text_input.value or "").strip()
                     answer = answer_input.value.strip()
 

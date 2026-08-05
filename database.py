@@ -163,8 +163,70 @@ def init_db():
         )
     """)
 
+    # Migration: normalize existing "Module" casing to uppercase. Module
+    # codes were previously stored exactly as typed, so the same module
+    # could end up as "25COP923" (typed by an admin assigning it) and
+    # "25cop923" (typed earlier on a question) -- two different strings
+    # that don't match anywhere they're compared (the question list's
+    # Module filter, the create/edit dropdown, teacher_modules lookups).
+    # Running this on every startup is harmless once everything is already
+    # uppercase.
+    cursor.execute("""
+        UPDATE questions
+        SET "Module" = UPPER(TRIM("Module"))
+        WHERE "Module" IS NOT NULL AND TRIM("Module") != ''
+    """)
+
+    # teacher_modules has a UNIQUE(Username, Module) constraint, so a plain
+    # UPDATE could raise an IntegrityError if a teacher was ever assigned
+    # both "25cop923" and "25COP923" (two rows that collide once
+    # uppercased). Rebuild each teacher's list in Python instead, so
+    # duplicates collapse cleanly.
+    cursor.execute('SELECT DISTINCT "Username" FROM teacher_modules')
+    usernames = [row["Username"] for row in cursor.fetchall()]
+    for uname in usernames:
+        cursor.execute('SELECT "Module" FROM teacher_modules WHERE "Username" = ?', (uname,))
+        seen = set()
+        normalized = []
+        for row in cursor.fetchall():
+            m = (row["Module"] or "").strip().upper()
+            if m and m not in seen:
+                seen.add(m)
+                normalized.append(m)
+        cursor.execute('DELETE FROM teacher_modules WHERE "Username" = ?', (uname,))
+        for m in normalized:
+            cursor.execute(
+                'INSERT INTO teacher_modules ("Username", "Module") VALUES (?, ?)',
+                (uname, m),
+            )
+
+    # Migration: some question_parts rows have a garbage "Answer space"
+    # value (e.g. a bare number like 3) instead of 'half'/'full' -- likely
+    # from data written before the 'half'/'full' convention existed, or
+    # edited directly in the .db file. latex_export.py calls .strip() on
+    # this value when building the exported PDF, so anything that isn't
+    # already a valid string crashes the export with no visible error to
+    # the user. Normalize any invalid value back to the 'half' default.
+    cursor.execute("""
+        UPDATE question_parts
+        SET "Answer space" = 'half'
+        WHERE "Answer space" IS NULL OR "Answer space" NOT IN ('half', 'full')
+    """)
+
     conn.commit()
     conn.close()
+
+
+def _normalize_module(module) -> Optional[str]:
+    """Normalize a course module code to a single consistent case (upper)
+    and strip surrounding whitespace, so the same module always compares
+    and displays equal regardless of who typed it or when (e.g. "25cop923"
+    vs "25COP923" are the same module). Returns None for blank/missing
+    input. Used by every code path that writes a Module value."""
+    if module is None:
+        return None
+    module = str(module).strip().upper()
+    return module or None
 
 
 # ---------------------------------------------------------------------------
@@ -408,7 +470,7 @@ def add_question(question: dict) -> int:
         question.get("Created by"),
         question.get("Created at"),
         question.get("Usage", 0),
-        question.get("Module"),
+        _normalize_module(question.get("Module")),
     ))
 
     conn.commit()
@@ -448,7 +510,7 @@ def update_question(question_id: int, updated_question: dict) -> bool:
         updated_question.get("Created at"),
         updated_question.get("Updated at"),
         updated_question.get("Usage", 0),
-        updated_question.get("Module"),
+        _normalize_module(updated_question.get("Module")),
         question_id,
     ))
 
@@ -529,10 +591,10 @@ def set_teacher_modules(username: str, modules: list) -> None:
 
     seen = set()
     for module in modules:
-        module = (module or "").strip()
-        if not module or module.lower() in seen:
+        module = _normalize_module(module)
+        if not module or module in seen:
             continue
-        seen.add(module.lower())
+        seen.add(module)
         cursor.execute(
             'INSERT INTO teacher_modules ("Username", "Module") VALUES (?, ?)',
             (username, module),
