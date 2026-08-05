@@ -1,8 +1,46 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: exam_platform
+      POSTGRES_PASSWORD: exam_platform
+      POSTGRES_DB: exam_platform
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U exam_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   exam-platform:
     build: .
     ports:
       - "8080:8080"
-    volumes:
-      - ./exam_platform.db:/app/exam_platform.db
+    environment:
+      DATABASE_URL: postgresql://exam_platform:exam_platform@postgres:5432/exam_platform
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+volumes:
+  pgdata:
+  pgadmin_data:

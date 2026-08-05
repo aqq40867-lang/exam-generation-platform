@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.git/
+.nicegui/
+exam_platform.db
+exam_platform.db-journal
+example.pdf
+solutions.pdf

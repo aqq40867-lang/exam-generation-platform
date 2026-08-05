@@ -1,16 +1,20 @@
 """
-Simple SQLite-backed data layer for the exam platform.
+SQLAlchemy/Postgres-backed data layer for the exam platform.
 
-Why SQLite:
-- Built into Python's standard library (the `sqlite3` module) -> no install,
-  no account, no cost, ever.
-- The whole database is a single file (exam_platform.db) that lives next to
-  this script, so it's easy to back up / submit with your assignment.
-- Perfectly fine for a single small table like this with hundreds/thousands
-  of rows and a handful of users.
+This used to be hand-written SQLite queries (see git history). It's now
+built on the ORM models in models.py, talking to Postgres by default --
+but every public function here still takes/returns exactly the same
+shapes (plain dicts keyed by the original column names, e.g. "Question",
+"Main question", "Created by") as before, so none of the pages/*.py files
+needed to change.
+
+Connection: reads DATABASE_URL from the environment (see docker-compose.yml
+for the value used when running via Docker). Falls back to a local
+Postgres instance on localhost for running the app directly without
+Docker (you'll need Postgres installed and a matching database/role
+created yourself in that case).
 """
 
-import sqlite3
 import os
 import hashlib
 import secrets
@@ -18,203 +22,104 @@ import string
 from datetime import datetime
 from typing import Optional, Tuple
 
-# The .db file will be created next to this file, in the same folder.
-DB_PATH = os.path.join(os.path.dirname(__file__), "exam_platform.db")
+from sqlalchemy import create_engine, func, or_
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import IntegrityError
+
+from models import (
+    Base,
+    Question,
+    QuestionPart,
+    User,
+    Exam,
+    ExamQuestion,
+    TeacherModule,
+    _row_to_dict,
+)
+
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://exam_platform:exam_platform@localhost:5432/exam_platform",
+)
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(bind=engine)
 
 
-def get_connection():
-    """Open a connection to the SQLite database file.
-
-    row_factory = sqlite3.Row lets us access columns by name (like a dict),
-    which matches how the rest of the app already uses question.get("Question")
-    etc.
-    """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    # Needed so that ON DELETE CASCADE (used by exam_questions) is enforced.
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+def get_session():
+    """Open a new ORM session. Callers are responsible for closing it
+    (mirrors the old sqlite get_connection()/conn.close() pattern used
+    throughout this file -- every function below opens one session, does
+    its work, and closes it, rather than sharing a long-lived session)."""
+    return SessionLocal()
 
 
 def init_db():
-    """Create all tables if they don't exist yet.
+    """Create all tables if they don't exist yet, then run one-time data
+    migrations that clean up historically bad data.
 
-    Column names with spaces (like "Created by") are quoted with double
-    quotes, which SQLite allows.
+    Unlike the old SQLite version, there's no hand-rolled "does this
+    column exist yet, if not ALTER TABLE" logic here: Base.metadata.create_all()
+    creates the full current schema (as defined in models.py) on a fresh
+    database, and is a safe no-op on one that already has the tables.
     """
-    conn = get_connection()
-    cursor = conn.cursor()
+    Base.metadata.create_all(engine)
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS questions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            "Question" TEXT NOT NULL,
-            "Main question" TEXT,
-            "Marks" INTEGER,
-            "Answer" TEXT,
-            "Status" TEXT,
-            "Version" INTEGER,
-            "Created by" TEXT,
-            "Created at" TEXT,
-            "Updated at" TEXT,
-            "Usage" INTEGER DEFAULT 0,
-            "Module" TEXT
-        )
-    """)
+    session = get_session()
+    try:
+        # Migration: normalize existing "Module" casing to uppercase.
+        # Module codes were previously stored exactly as typed, so the
+        # same module could end up as "25COP923" (typed by an admin
+        # assigning it) and "25cop923" (typed earlier on a question) --
+        # two different strings that don't match anywhere they're
+        # compared (the question list's Module filter, the create/edit
+        # dropdown, teacher_modules lookups). Safe to run on every
+        # startup; a no-op once everything is already uppercase.
+        for q in session.query(Question).filter(Question.module.isnot(None)):
+            normalized = _normalize_module(q.module)
+            if q.module != normalized:
+                q.module = normalized
 
-    # Migration: older DB files may already have a `questions` table that
-    # was created before the "Module" column existed. ALTER TABLE ... ADD
-    # COLUMN is a no-op-safe way to bring old databases up to date without
-    # losing data.
-    existing_columns = {row["name"] for row in cursor.execute("PRAGMA table_info(questions)")}
-    if "Module" not in existing_columns:
-        cursor.execute('ALTER TABLE questions ADD COLUMN "Module" TEXT')
-
-    # Sub-questions (子问题) belonging to a single "main question" row in
-    # `questions` (e.g. main question "A. Binary Tree" -> parts (a), (b), (c)).
-    # A main question may have zero sub-questions (plain question, uses the
-    # "Marks" column on `questions` directly) or many (in which case the
-    # main question's "Marks" is auto-computed as the sum of its parts).
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS question_parts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
-            "Label" TEXT,
-            "Order" INTEGER,
-            "Description" TEXT,
-            "Marks" INTEGER NOT NULL DEFAULT 0,
-            "Answer" TEXT,
-            "Answer space" TEXT NOT NULL DEFAULT 'half'
-        )
-    """)
-
-    # Migration: older DB files may already have a `question_parts` table
-    # created before the "Answer space" column existed. It stores how much
-    # blank space to reserve for the student's answer to this sub-question
-    # on the exported paper: 'half' (half a page) or 'full' (a whole page,
-    # forces a page break).
-    existing_part_columns = {row["name"] for row in cursor.execute("PRAGMA table_info(question_parts)")}
-    if "Answer space" not in existing_part_columns:
-        cursor.execute("ALTER TABLE question_parts ADD COLUMN \"Answer space\" TEXT NOT NULL DEFAULT 'half'")
-
-    # Accounts. Passwords are never stored in plain text: we keep a random
-    # per-user salt plus a PBKDF2-SHA256 hash of (password + salt).
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            "Username" TEXT NOT NULL UNIQUE,
-            "Password hash" TEXT NOT NULL,
-            "Salt" TEXT NOT NULL,
-            "Role" TEXT NOT NULL DEFAULT 'teacher',
-            "Created at" TEXT,
-            "Last login at" TEXT,
-            "Protected" INTEGER NOT NULL DEFAULT 0
-        )
-    """)
-
-    # Migration: older DB files may already have a `users` table created
-    # before the "Protected" column existed. A protected account is a
-    # top-level admin whose role can never be changed or deleted by anyone
-    # (including other admins) through the app -- it's the one account
-    # guaranteed to always stay admin, so nobody can ever lock everyone else
-    # out by accidentally demoting/deleting the last admin.
-    existing_user_columns = {row["name"] for row in cursor.execute("PRAGMA table_info(users)")}
-    if "Protected" not in existing_user_columns:
-        cursor.execute('ALTER TABLE users ADD COLUMN "Protected" INTEGER NOT NULL DEFAULT 0')
-
-    # Exams / exam papers.
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS exams (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            "Name" TEXT NOT NULL,
-            "Description" TEXT,
-            "Total marks" INTEGER,
-            "Status" TEXT DEFAULT 'Draft',
-            "Created by" TEXT,
-            "Created at" TEXT,
-            "Updated at" TEXT
-        )
-    """)
-
-    # Which questions belong to which exam, in what order, and whether the
-    # question's default mark value is overridden for that specific exam.
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS exam_questions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
-            question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
-            "Order" INTEGER,
-            "Marks override" INTEGER,
-            UNIQUE(exam_id, question_id)
-        )
-    """)
-
-    # Which course modules (e.g. "CO923") each teacher is allowed to author
-    # questions for. Maintained by admins on the User Management page; the
-    # Module dropdown on the create/edit question pages only offers a
-    # teacher the modules they've been assigned here (they cannot type
-    # their own).
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS teacher_modules (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            "Username" TEXT NOT NULL,
-            "Module" TEXT NOT NULL,
-            UNIQUE("Username", "Module")
-        )
-    """)
-
-    # Migration: normalize existing "Module" casing to uppercase. Module
-    # codes were previously stored exactly as typed, so the same module
-    # could end up as "25COP923" (typed by an admin assigning it) and
-    # "25cop923" (typed earlier on a question) -- two different strings
-    # that don't match anywhere they're compared (the question list's
-    # Module filter, the create/edit dropdown, teacher_modules lookups).
-    # Running this on every startup is harmless once everything is already
-    # uppercase.
-    cursor.execute("""
-        UPDATE questions
-        SET "Module" = UPPER(TRIM("Module"))
-        WHERE "Module" IS NOT NULL AND TRIM("Module") != ''
-    """)
-
-    # teacher_modules has a UNIQUE(Username, Module) constraint, so a plain
-    # UPDATE could raise an IntegrityError if a teacher was ever assigned
-    # both "25cop923" and "25COP923" (two rows that collide once
-    # uppercased). Rebuild each teacher's list in Python instead, so
-    # duplicates collapse cleanly.
-    cursor.execute('SELECT DISTINCT "Username" FROM teacher_modules')
-    usernames = [row["Username"] for row in cursor.fetchall()]
-    for uname in usernames:
-        cursor.execute('SELECT "Module" FROM teacher_modules WHERE "Username" = ?', (uname,))
-        seen = set()
-        normalized = []
-        for row in cursor.fetchall():
-            m = (row["Module"] or "").strip().upper()
-            if m and m not in seen:
-                seen.add(m)
-                normalized.append(m)
-        cursor.execute('DELETE FROM teacher_modules WHERE "Username" = ?', (uname,))
-        for m in normalized:
-            cursor.execute(
-                'INSERT INTO teacher_modules ("Username", "Module") VALUES (?, ?)',
-                (uname, m),
+        # teacher_modules has a UNIQUE(username, module) constraint, so a
+        # plain uppercase-in-place update could collide if a teacher was
+        # ever assigned both "25cop923" and "25COP923". Walk each
+        # teacher's rows (oldest first) and drop later duplicates instead.
+        usernames = [
+            row[0] for row in session.query(TeacherModule.username).distinct()
+        ]
+        for uname in usernames:
+            rows = (
+                session.query(TeacherModule)
+                .filter(TeacherModule.username == uname)
+                .order_by(TeacherModule.id.asc())
+                .all()
             )
+            seen = set()
+            for row in rows:
+                normalized = _normalize_module(row.module)
+                if not normalized or normalized in seen:
+                    session.delete(row)
+                else:
+                    seen.add(normalized)
+                    row.module = normalized
 
-    # Migration: some question_parts rows have a garbage "Answer space"
-    # value (e.g. a bare number like 3) instead of 'half'/'full' -- likely
-    # from data written before the 'half'/'full' convention existed, or
-    # edited directly in the .db file. latex_export.py calls .strip() on
-    # this value when building the exported PDF, so anything that isn't
-    # already a valid string crashes the export with no visible error to
-    # the user. Normalize any invalid value back to the 'half' default.
-    cursor.execute("""
-        UPDATE question_parts
-        SET "Answer space" = 'half'
-        WHERE "Answer space" IS NULL OR "Answer space" NOT IN ('half', 'full')
-    """)
+        # Migration: some question_parts rows have a garbage "Answer
+        # space" value (e.g. a bare number) instead of 'half'/'full' --
+        # likely from data written before the 'half'/'full' convention
+        # existed, or edited directly. latex_export.py calls .strip() on
+        # this value when building the exported PDF, so anything that
+        # isn't already a valid string crashes the export with no
+        # visible error to the user. Normalize invalid values to 'half'.
+        session.query(QuestionPart).filter(
+            or_(
+                QuestionPart.answer_space.is_(None),
+                ~QuestionPart.answer_space.in_(["half", "full"]),
+            )
+        ).update({QuestionPart.answer_space: "half"}, synchronize_session=False)
 
-    conn.commit()
-    conn.close()
+        session.commit()
+    finally:
+        session.close()
 
 
 def _normalize_module(module) -> Optional[str]:
@@ -261,38 +166,40 @@ def create_user(username: str, password: str, role: str = "teacher", protected: 
     never be changed and the account can never be deleted through the app
     (see `update_user_role` / `delete_user`), guaranteeing there's always at
     least one admin who can manage everyone else's role."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    session = get_session()
 
     password_hash, salt = _hash_password(password)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     try:
-        cursor.execute("""
-            INSERT INTO users ("Username", "Password hash", "Salt", "Role", "Created at", "Protected")
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (username, password_hash, salt, role, now, 1 if protected else 0))
-        conn.commit()
-        new_id = cursor.lastrowid
-    except sqlite3.IntegrityError:
+        user = User(
+            username=username,
+            password_hash=password_hash,
+            salt=salt,
+            role=role,
+            created_at=now,
+            protected=1 if protected else 0,
+        )
+        session.add(user)
+        session.commit()
+        new_id = user.id
+    except IntegrityError:
+        session.rollback()
         new_id = None
     finally:
-        conn.close()
+        session.close()
 
     return new_id
 
 
 def get_user_by_username(username: str):
     """Return a single user as a dict, or None if it doesn't exist."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute('SELECT * FROM users WHERE "Username" = ?', (username,))
-    row = cursor.fetchone()
-
-    conn.close()
-
-    return dict(row) if row else None
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.username == username).first()
+        return _row_to_dict(user)
+    finally:
+        session.close()
 
 
 def authenticate_user(username: str, password: str):
@@ -309,15 +216,14 @@ def authenticate_user(username: str, password: str):
     if not secrets.compare_digest(expected_hash, user["Password hash"]):
         return None
 
-    conn = get_connection()
-    cursor = conn.cursor()
+    session = get_session()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute(
-        'UPDATE users SET "Last login at" = ? WHERE id = ?',
-        (now, user["id"]),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        db_user = session.query(User).filter(User.id == user["id"]).first()
+        db_user.last_login_at = now
+        session.commit()
+    finally:
+        session.close()
 
     return {
         "id": user["id"],
@@ -330,20 +236,18 @@ def authenticate_user(username: str, password: str):
 
 def update_user_password(username: str, new_password: str) -> bool:
     """Reset a user's password. Returns True if a row was updated."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    password_hash, salt = _hash_password(new_password)
-    cursor.execute("""
-        UPDATE users SET "Password hash" = ?, "Salt" = ?
-        WHERE "Username" = ?
-    """, (password_hash, salt, username))
-
-    conn.commit()
-    success = cursor.rowcount > 0
-    conn.close()
-
-    return success
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.username == username).first()
+        if not user:
+            return False
+        password_hash, salt = _hash_password(new_password)
+        user.password_hash = password_hash
+        user.salt = salt
+        session.commit()
+        return True
+    finally:
+        session.close()
 
 
 def update_user_role(username: str, new_role: str) -> bool:
@@ -353,49 +257,51 @@ def update_user_role(username: str, new_role: str) -> bool:
     protected account's role is permanently locked as whatever it was
     created with (always "admin" in practice), so it can't be demoted by
     another admin, accidentally or otherwise."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        'UPDATE users SET "Role" = ? WHERE "Username" = ? AND "Protected" = 0',
-        (new_role, username),
-    )
-
-    conn.commit()
-    success = cursor.rowcount > 0
-    conn.close()
-
-    return success
+    session = get_session()
+    try:
+        user = (
+            session.query(User)
+            .filter(User.username == username, User.protected == 0)
+            .first()
+        )
+        if not user:
+            return False
+        user.role = new_role
+        session.commit()
+        return True
+    finally:
+        session.close()
 
 
 def delete_user(username: str) -> bool:
     """Delete a user by username. Returns True if a row was deleted.
 
     Refuses (returns False, no-op) if the account is protected."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute('DELETE FROM users WHERE "Username" = ? AND "Protected" = 0', (username,))
-
-    conn.commit()
-    success = cursor.rowcount > 0
-    conn.close()
-
-    return success
+    session = get_session()
+    try:
+        user = (
+            session.query(User)
+            .filter(User.username == username, User.protected == 0)
+            .first()
+        )
+        if not user:
+            return False
+        session.delete(user)
+        session.commit()
+        return True
+    finally:
+        session.close()
 
 
 def is_protected_user(username: str) -> bool:
     """Return True if this account's role/existence is locked (see
     `update_user_role` / `delete_user`)."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute('SELECT "Protected" FROM users WHERE "Username" = ?', (username,))
-    row = cursor.fetchone()
-
-    conn.close()
-
-    return bool(row and row["Protected"])
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.username == username).first()
+        return bool(user and user.protected)
+    finally:
+        session.close()
 
 
 def list_users():
@@ -404,18 +310,22 @@ def list_users():
     Protected accounts (the top-level admin) are sorted first, so they
     always show up at the top of the User Management list regardless of
     when they were created; everyone else follows in creation order."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        'SELECT id, "Username", "Role", "Created at", "Last login at", "Protected" '
-        'FROM users ORDER BY "Protected" DESC, id ASC'
-    )
-    rows = cursor.fetchall()
-
-    conn.close()
-
-    return [dict(row) for row in rows]
+    session = get_session()
+    try:
+        rows = (
+            session.query(User)
+            .order_by(User.protected.desc(), User.id.asc())
+            .all()
+        )
+        result = []
+        for u in rows:
+            d = _row_to_dict(u)
+            d.pop("Password hash", None)
+            d.pop("Salt", None)
+            result.append(d)
+        return result
+    finally:
+        session.close()
 
 
 # ---------------------------------------------------------------------------
@@ -426,113 +336,82 @@ def list_users():
 
 def load_questions():
     """Return all questions as a list of dicts."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT * FROM questions")
-    rows = cursor.fetchall()
-
-    conn.close()
-
-    return [dict(row) for row in rows]
+    session = get_session()
+    try:
+        return [_row_to_dict(q) for q in session.query(Question).all()]
+    finally:
+        session.close()
 
 
 def get_question(question_id: int):
     """Return a single question as a dict, or None if it doesn't exist."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT * FROM questions WHERE id = ?", (question_id,))
-    row = cursor.fetchone()
-
-    conn.close()
-
-    return dict(row) if row else None
+    session = get_session()
+    try:
+        q = session.query(Question).filter(Question.id == question_id).first()
+        return _row_to_dict(q)
+    finally:
+        session.close()
 
 
 def add_question(question: dict) -> int:
     """Insert a new question and return its new id."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        INSERT INTO questions (
-            "Question", "Main question", "Marks", "Answer",
-            "Status", "Version", "Created by", "Created at", "Usage", "Module"
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        question.get("Question"),
-        question.get("Main question"),
-        question.get("Marks"),
-        question.get("Answer"),
-        question.get("Status"),
-        question.get("Version"),
-        question.get("Created by"),
-        question.get("Created at"),
-        question.get("Usage", 0),
-        _normalize_module(question.get("Module")),
-    ))
-
-    conn.commit()
-    new_id = cursor.lastrowid
-    conn.close()
-
-    return new_id
+    session = get_session()
+    try:
+        q = Question(
+            question=question.get("Question"),
+            main_question=question.get("Main question"),
+            marks=question.get("Marks"),
+            answer=question.get("Answer"),
+            status=question.get("Status"),
+            version=question.get("Version"),
+            created_by=question.get("Created by"),
+            created_at=question.get("Created at"),
+            usage=question.get("Usage", 0),
+            module=_normalize_module(question.get("Module")),
+        )
+        session.add(q)
+        session.commit()
+        return q.id
+    finally:
+        session.close()
 
 
 def update_question(question_id: int, updated_question: dict) -> bool:
     """Update an existing question. Returns True if a row was updated."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        UPDATE questions
-        SET "Question" = ?,
-            "Main question" = ?,
-            "Marks" = ?,
-            "Answer" = ?,
-            "Status" = ?,
-            "Version" = ?,
-            "Created by" = ?,
-            "Created at" = ?,
-            "Updated at" = ?,
-            "Usage" = ?,
-            "Module" = ?
-        WHERE id = ?
-    """, (
-        updated_question.get("Question"),
-        updated_question.get("Main question"),
-        updated_question.get("Marks"),
-        updated_question.get("Answer"),
-        updated_question.get("Status"),
-        updated_question.get("Version"),
-        updated_question.get("Created by"),
-        updated_question.get("Created at"),
-        updated_question.get("Updated at"),
-        updated_question.get("Usage", 0),
-        _normalize_module(updated_question.get("Module")),
-        question_id,
-    ))
-
-    conn.commit()
-    success = cursor.rowcount > 0
-    conn.close()
-
-    return success
+    session = get_session()
+    try:
+        q = session.query(Question).filter(Question.id == question_id).first()
+        if not q:
+            return False
+        q.question = updated_question.get("Question")
+        q.main_question = updated_question.get("Main question")
+        q.marks = updated_question.get("Marks")
+        q.answer = updated_question.get("Answer")
+        q.status = updated_question.get("Status")
+        q.version = updated_question.get("Version")
+        q.created_by = updated_question.get("Created by")
+        q.created_at = updated_question.get("Created at")
+        q.updated_at = updated_question.get("Updated at")
+        q.usage = updated_question.get("Usage", 0)
+        q.module = _normalize_module(updated_question.get("Module"))
+        session.commit()
+        return True
+    finally:
+        session.close()
 
 
 def delete_question(question_id: int) -> bool:
     """Delete a question by id. Returns True if a row was deleted."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("DELETE FROM questions WHERE id = ?", (question_id,))
-
-    conn.commit()
-    success = cursor.rowcount > 0
-    conn.close()
-
-    return success
+    session = get_session()
+    try:
+        q = session.query(Question).filter(Question.id == question_id).first()
+        if not q:
+            return False
+        session.delete(q)
+        session.commit()
+        return True
+    finally:
+        session.close()
 
 
 def list_modules():
@@ -542,19 +421,18 @@ def list_modules():
     Used to populate the module dropdown/combobox on the create/edit forms
     and the filter dropdown on the question list page.
     """
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT DISTINCT "Module" FROM questions
-        WHERE "Module" IS NOT NULL AND TRIM("Module") != ''
-        ORDER BY "Module" COLLATE NOCASE
-    """)
-    rows = cursor.fetchall()
-
-    conn.close()
-
-    return [row["Module"] for row in rows]
+    session = get_session()
+    try:
+        rows = (
+            session.query(Question.module)
+            .filter(Question.module.isnot(None), func.trim(Question.module) != "")
+            .distinct()
+            .order_by(func.lower(Question.module))
+            .all()
+        )
+        return [r[0] for r in rows]
+    finally:
+        session.close()
 
 
 # ---------------------------------------------------------------------------
@@ -567,60 +445,56 @@ def list_modules():
 
 def get_teacher_modules(username: str):
     """Return the sorted list of modules a teacher has been assigned."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        'SELECT "Module" FROM teacher_modules WHERE "Username" = ? ORDER BY "Module" COLLATE NOCASE',
-        (username,),
-    )
-    rows = cursor.fetchall()
-
-    conn.close()
-
-    return [row["Module"] for row in rows]
+    session = get_session()
+    try:
+        rows = (
+            session.query(TeacherModule.module)
+            .filter(TeacherModule.username == username)
+            .order_by(func.lower(TeacherModule.module))
+            .all()
+        )
+        return [r[0] for r in rows]
+    finally:
+        session.close()
 
 
 def set_teacher_modules(username: str, modules: list) -> None:
     """Replace the full set of modules assigned to a teacher with `modules`
     (a list of strings). Blank/duplicate entries are ignored."""
-    conn = get_connection()
-    cursor = conn.cursor()
+    session = get_session()
+    try:
+        session.query(TeacherModule).filter(TeacherModule.username == username).delete()
 
-    cursor.execute('DELETE FROM teacher_modules WHERE "Username" = ?', (username,))
+        seen = set()
+        for module in modules:
+            module = _normalize_module(module)
+            if not module or module in seen:
+                continue
+            seen.add(module)
+            session.add(TeacherModule(username=username, module=module))
 
-    seen = set()
-    for module in modules:
-        module = _normalize_module(module)
-        if not module or module in seen:
-            continue
-        seen.add(module)
-        cursor.execute(
-            'INSERT INTO teacher_modules ("Username", "Module") VALUES (?, ?)',
-            (username, module),
-        )
-
-    conn.commit()
-    conn.close()
+        session.commit()
+    finally:
+        session.close()
 
 
 def list_all_assignable_modules():
     """Return a sorted list of every module code known to the system so far
     (already used on a question, or already assigned to some teacher), to
     use as suggestions when an admin assigns modules to a teacher."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT "Module" FROM questions WHERE "Module" IS NOT NULL AND TRIM("Module") != ''
-        UNION
-        SELECT "Module" FROM teacher_modules
-    """)
-    rows = cursor.fetchall()
-
-    conn.close()
-
-    return sorted({row["Module"] for row in rows}, key=str.lower)
+    session = get_session()
+    try:
+        from_questions = (
+            session.query(Question.module)
+            .filter(Question.module.isnot(None), func.trim(Question.module) != "")
+            .distinct()
+            .all()
+        )
+        from_teachers = session.query(TeacherModule.module).distinct().all()
+        all_modules = {r[0] for r in from_questions} | {r[0] for r in from_teachers}
+        return sorted(all_modules, key=str.lower)
+    finally:
+        session.close()
 
 
 # ---------------------------------------------------------------------------
@@ -648,19 +522,17 @@ def _label_for_index(index: int) -> str:
 
 def get_question_parts(question_id: int):
     """Return all sub-questions for a main question, in order."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT * FROM question_parts
-        WHERE question_id = ?
-        ORDER BY "Order" IS NULL, "Order"
-    """, (question_id,))
-    rows = cursor.fetchall()
-
-    conn.close()
-
-    return [dict(row) for row in rows]
+    session = get_session()
+    try:
+        rows = (
+            session.query(QuestionPart)
+            .filter(QuestionPart.question_id == question_id)
+            .order_by(QuestionPart.order_index.is_(None), QuestionPart.order_index)
+            .all()
+        )
+        return [_row_to_dict(p) for p in rows]
+    finally:
+        session.close()
 
 
 def replace_question_parts(question_id: int, parts: list) -> int:
@@ -679,35 +551,34 @@ def replace_question_parts(question_id: int, parts: list) -> int:
     total is returned. If `parts` is empty, the parent's "Marks" is left
     untouched and 0 is returned.
     """
-    conn = get_connection()
-    cursor = conn.cursor()
+    session = get_session()
+    try:
+        session.query(QuestionPart).filter(QuestionPart.question_id == question_id).delete()
 
-    cursor.execute("DELETE FROM question_parts WHERE question_id = ?", (question_id,))
+        total_marks = 0
+        for order, part in enumerate(parts):
+            marks = int(part.get("Marks") or 0)
+            total_marks += marks
+            answer_space = part.get("Answer space")
+            session.add(QuestionPart(
+                question_id=question_id,
+                label=_label_for_index(order),
+                order_index=order,
+                description=part.get("Description"),
+                marks=marks,
+                answer=part.get("Answer"),
+                answer_space=answer_space if answer_space in ("half", "full") else "half",
+            ))
 
-    total_marks = 0
-    for order, part in enumerate(parts):
-        marks = int(part.get("Marks") or 0)
-        total_marks += marks
-        cursor.execute("""
-            INSERT INTO question_parts (question_id, "Label", "Order", "Description", "Marks", "Answer", "Answer space")
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            question_id,
-            _label_for_index(order),
-            order,
-            part.get("Description"),
-            marks,
-            part.get("Answer"),
-            part.get("Answer space") if part.get("Answer space") in ("half", "full") else "half",
-        ))
+        if parts:
+            q = session.query(Question).filter(Question.id == question_id).first()
+            if q:
+                q.marks = total_marks
 
-    if parts:
-        cursor.execute('UPDATE questions SET "Marks" = ? WHERE id = ?', (total_marks, question_id))
-
-    conn.commit()
-    conn.close()
-
-    return total_marks
+        session.commit()
+        return total_marks
+    finally:
+        session.close()
 
 
 def delete_question_parts(question_id: int) -> None:
@@ -715,13 +586,12 @@ def delete_question_parts(question_id: int) -> None:
     automatically via ON DELETE CASCADE when the question itself is
     deleted, but exposed here for explicit use, e.g. converting a
     multi-part question back into a plain one)."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("DELETE FROM question_parts WHERE question_id = ?", (question_id,))
-
-    conn.commit()
-    conn.close()
+    session = get_session()
+    try:
+        session.query(QuestionPart).filter(QuestionPart.question_id == question_id).delete()
+        session.commit()
+    finally:
+        session.close()
 
 
 # ---------------------------------------------------------------------------
@@ -732,98 +602,73 @@ def delete_question_parts(question_id: int) -> None:
 
 def load_exams():
     """Return all exams as a list of dicts."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT * FROM exams")
-    rows = cursor.fetchall()
-
-    conn.close()
-
-    return [dict(row) for row in rows]
+    session = get_session()
+    try:
+        return [_row_to_dict(e) for e in session.query(Exam).all()]
+    finally:
+        session.close()
 
 
 def get_exam(exam_id: int):
     """Return a single exam as a dict, or None if it doesn't exist."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT * FROM exams WHERE id = ?", (exam_id,))
-    row = cursor.fetchone()
-
-    conn.close()
-
-    return dict(row) if row else None
+    session = get_session()
+    try:
+        e = session.query(Exam).filter(Exam.id == exam_id).first()
+        return _row_to_dict(e)
+    finally:
+        session.close()
 
 
 def add_exam(exam: dict) -> int:
     """Insert a new exam and return its new id."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        INSERT INTO exams (
-            "Name", "Description", "Total marks", "Status",
-            "Created by", "Created at"
-        ) VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        exam.get("Name"),
-        exam.get("Description"),
-        exam.get("Total marks"),
-        exam.get("Status", "Draft"),
-        exam.get("Created by"),
-        exam.get("Created at"),
-    ))
-
-    conn.commit()
-    new_id = cursor.lastrowid
-    conn.close()
-
-    return new_id
+    session = get_session()
+    try:
+        e = Exam(
+            name=exam.get("Name"),
+            description=exam.get("Description"),
+            total_marks=exam.get("Total marks"),
+            status=exam.get("Status", "Draft"),
+            created_by=exam.get("Created by"),
+            created_at=exam.get("Created at"),
+        )
+        session.add(e)
+        session.commit()
+        return e.id
+    finally:
+        session.close()
 
 
 def update_exam(exam_id: int, updated_exam: dict) -> bool:
     """Update an existing exam. Returns True if a row was updated."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        UPDATE exams
-        SET "Name" = ?,
-            "Description" = ?,
-            "Total marks" = ?,
-            "Status" = ?,
-            "Updated at" = ?
-        WHERE id = ?
-    """, (
-        updated_exam.get("Name"),
-        updated_exam.get("Description"),
-        updated_exam.get("Total marks"),
-        updated_exam.get("Status"),
-        updated_exam.get("Updated at"),
-        exam_id,
-    ))
-
-    conn.commit()
-    success = cursor.rowcount > 0
-    conn.close()
-
-    return success
+    session = get_session()
+    try:
+        e = session.query(Exam).filter(Exam.id == exam_id).first()
+        if not e:
+            return False
+        e.name = updated_exam.get("Name")
+        e.description = updated_exam.get("Description")
+        e.total_marks = updated_exam.get("Total marks")
+        e.status = updated_exam.get("Status")
+        e.updated_at = updated_exam.get("Updated at")
+        session.commit()
+        return True
+    finally:
+        session.close()
 
 
 def delete_exam(exam_id: int) -> bool:
     """Delete an exam by id (its exam_questions links cascade). Returns
     True if a row was deleted."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("DELETE FROM exams WHERE id = ?", (exam_id,))
-
-    conn.commit()
-    success = cursor.rowcount > 0
-    conn.close()
-
-    return success
+    session = get_session()
+    try:
+        e = session.query(Exam).filter(Exam.id == exam_id).first()
+        if not e:
+            return False
+        session.delete(e)
+        session.commit()
+        return True
+    finally:
+        session.close()
 
 
 # ---------------------------------------------------------------------------
@@ -837,57 +682,69 @@ def delete_exam(exam_id: int) -> bool:
 def add_question_to_exam(exam_id: int, question_id: int, order: Optional[int] = None,
                           marks_override: Optional[int] = None) -> int:
     """Attach a question to an exam. Returns the new exam_questions row id."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        INSERT INTO exam_questions (exam_id, question_id, "Order", "Marks override")
-        VALUES (?, ?, ?, ?)
-    """, (exam_id, question_id, order, marks_override))
-
-    conn.commit()
-    new_id = cursor.lastrowid
-    conn.close()
-
-    return new_id
+    session = get_session()
+    try:
+        eq = ExamQuestion(
+            exam_id=exam_id,
+            question_id=question_id,
+            order_index=order,
+            marks_override=marks_override,
+        )
+        session.add(eq)
+        session.commit()
+        return eq.id
+    finally:
+        session.close()
 
 
 def remove_question_from_exam(exam_id: int, question_id: int) -> bool:
     """Detach a question from an exam. Returns True if a row was deleted."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "DELETE FROM exam_questions WHERE exam_id = ? AND question_id = ?",
-        (exam_id, question_id),
-    )
-
-    conn.commit()
-    success = cursor.rowcount > 0
-    conn.close()
-
-    return success
+    session = get_session()
+    try:
+        deleted = (
+            session.query(ExamQuestion)
+            .filter(ExamQuestion.exam_id == exam_id, ExamQuestion.question_id == question_id)
+            .delete()
+        )
+        session.commit()
+        return deleted > 0
+    finally:
+        session.close()
 
 
 def get_exam_questions(exam_id: int):
     """Return the full question rows attached to an exam, in order, each
     annotated with its exam-specific "Marks override" (may be None)."""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT q.*, eq."Order" AS "Order", eq."Marks override" AS "Marks override"
-        FROM exam_questions eq
-        JOIN questions q ON q.id = eq.question_id
-        WHERE eq.exam_id = ?
-        ORDER BY eq."Order" IS NULL, eq."Order"
-    """, (exam_id,))
-    rows = cursor.fetchall()
-
-    conn.close()
-
-    return [dict(row) for row in rows]
+    session = get_session()
+    try:
+        rows = (
+            session.query(Question, ExamQuestion)
+            .join(ExamQuestion, ExamQuestion.question_id == Question.id)
+            .filter(ExamQuestion.exam_id == exam_id)
+            .order_by(ExamQuestion.order_index.is_(None), ExamQuestion.order_index)
+            .all()
+        )
+        result = []
+        for question, eq in rows:
+            d = _row_to_dict(question)
+            d["Order"] = eq.order_index
+            d["Marks override"] = eq.marks_override
+            result.append(d)
+        return result
+    finally:
+        session.close()
 
 
 # Make sure all tables exist as soon as this module is imported.
 init_db()
+
+
+if __name__ == "__main__":
+    # Running "python database.py" directly is a quick way to (re)create
+    # tables and re-run the data migrations against DATABASE_URL without
+    # starting the full app -- init_db() already ran above via the import,
+    # this just gives visible confirmation instead of exiting silently.
+    print(f"Connected to: {DATABASE_URL}")
+    table_names = sorted(Base.metadata.tables.keys())
+    print(f"Tables ready: {', '.join(table_names)}")
+    print("init_db() completed successfully (tables created + migrations applied).")

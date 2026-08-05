@@ -1,6 +1,6 @@
 # Exam Platform
 
-A lightweight web application for teachers to create, manage, and organize exam questions. Built with [NiceGUI](https://nicegui.io/) and backed by a simple SQLite database.
+A lightweight web application for teachers to create, manage, and organize exam questions. Built with [NiceGUI](https://nicegui.io/) and backed by Postgres (via SQLAlchemy).
 
 ## Overview
 
@@ -13,7 +13,7 @@ Key features:
 - Draft/version tracking for each question
 - Per-user question list — private to the account that created it
 - Actions (View / Edit / Delete) available directly from a dropdown menu in the question table
-- Data stored locally in a single SQLite file — no external database or account required
+- Data stored in Postgres (SQLAlchemy ORM data layer)
 
 ## Who Is This For
 
@@ -27,8 +27,10 @@ This project is intended for small-scale, personal, or educational use (e.g., a 
 
 ```
 .
-├── app.py                 # Entry point — defines routes/pages
-├── database.py             # SQLite data layer (CRUD functions)
+├── app.py                          # Entry point — defines routes/pages
+├── models.py                       # SQLAlchemy ORM models (the schema)
+├── database.py                     # Data layer (CRUD functions, built on models.py)
+├── migrate_sqlite_to_postgres.py   # One-time script: import old exam_platform.db into Postgres
 ├── pages/
 │   ├── login.py             # Login page
 │   ├── question_list.py     # Question list + dropdown actions
@@ -37,8 +39,7 @@ This project is intended for small-scale, personal, or educational use (e.g., a 
 │   └── edit_question.py     # Edit existing question form
 ├── requirements.txt        # Python dependencies
 ├── Dockerfile               # Container build instructions
-├── docker-compose.yml       # Container run configuration
-└── exam_platform.db         # SQLite database file (created automatically)
+└── docker-compose.yml       # Container run configuration (app + Postgres)
 ```
 
 ## Getting Started
@@ -47,7 +48,7 @@ You can run this project either directly with Python, or with Docker (no local P
 
 ### Option 1: Run with Python
 
-**Requirements:** Python 3.9+
+**Requirements:** Python 3.9+, and a Postgres server you can connect to (local install, or any hosted Postgres).
 
 1. Clone the project:
    ```bash
@@ -58,13 +59,23 @@ You can run this project either directly with Python, or with Docker (no local P
    ```bash
    pip install -r requirements.txt
    ```
-3. Run the app:
+3. Point the app at your Postgres database. Set the `DATABASE_URL` environment variable (`postgresql://user:password@host:port/dbname`) before running, e.g. on Windows PowerShell:
+   ```powershell
+   $env:DATABASE_URL = "postgresql://exam_platform:exam_platform@localhost:5432/exam_platform"
+   ```
+   If `DATABASE_URL` isn't set, it defaults to `postgresql://exam_platform:exam_platform@localhost:5432/exam_platform` (matching the Docker setup below).
+4. Run the app:
    ```bash
    python app.py
    ```
-4. Open your browser at [http://localhost:8080](http://localhost:8080)
+   Tables are created automatically on first run (via `init_db()`).
+5. Open your browser at [http://localhost:8080](http://localhost:8080)
 
-The SQLite database file (`exam_platform.db`) is created automatically on first run.
+**Upgrading from an old SQLite install?** If you have an existing `exam_platform.db` with real data in it, run the one-time migration script *once*, after Postgres is reachable and before you start using the app for real:
+```bash
+python migrate_sqlite_to_postgres.py
+```
+It copies every table over (questions, users, exams, etc.) preserving all IDs and relationships. See the comment at the top of the script for details.
 
 ### Option 2: Run with Docker
 
@@ -75,7 +86,7 @@ The SQLite database file (`exam_platform.db`) is created automatically on first 
    git clone <your-repo-url>
    cd <project-folder>
    ```
-2. Build and start the container:
+2. Build and start both containers (the app and a Postgres database):
    ```bash
    docker compose up --build
    ```
@@ -88,12 +99,45 @@ The SQLite database file (`exam_platform.db`) is created automatically on first 
    ```bash
    docker compose down
    ```
+   (This stops the containers but keeps the Postgres data, which lives in a named Docker volume. Use `docker compose down -v` if you really want to wipe it.)
 
-With Docker, you don't need to install Python or any dependencies on the host machine — everything runs inside the container.
+With Docker, you don't need to install Python, Postgres, or any dependencies on the host machine — everything runs inside the containers.
+
+**Upgrading from an old SQLite install?** Start just the database first, run the migration script against it from your host machine, then start the app:
+```bash
+docker compose up -d postgres
+$env:DATABASE_URL = "postgresql://exam_platform:exam_platform@localhost:5432/exam_platform"  # PowerShell
+python migrate_sqlite_to_postgres.py
+docker compose up -d
+```
 
 ## Data Persistence
 
-All question data is stored in `exam_platform.db`, a single SQLite file created in the project directory. This file is not tracked by git by default — back it up manually (or add it to version control) if you want to preserve your data across machines.
+All data is stored in Postgres. When running via Docker, it lives in a named Docker volume (`pgdata`) that survives `docker compose down` / rebuilds; only `docker compose down -v` removes it. When running Postgres yourself outside Docker, back it up the way you'd back up any Postgres database (e.g. `pg_dump`).
+
+## Viewing the Database (pgAdmin)
+
+`docker-compose.yml` includes a pgAdmin service — a web-based GUI for browsing the Postgres tables (questions, users, exams, etc.) without needing to install anything separately or write SQL by hand.
+
+1. Start it (this also starts Postgres if it isn't already running):
+   ```bash
+   docker compose up -d pgadmin
+   ```
+2. Open [http://localhost:5050](http://localhost:5050) and log in:
+   - Email: `admin@example.com`
+   - Password: `admin`
+3. First time only — register the database server: right-click **Servers** in the left sidebar → **Register** → **Server...**
+   - **General** tab: Name — anything you like, e.g. `exam-platform`
+   - **Connection** tab:
+     - Host name/address: `postgres` (the Docker service name — not `localhost`, since pgAdmin talks to Postgres over the internal Docker network)
+     - Port: `5432`
+     - Maintenance database: `exam_platform`
+     - Username: `exam_platform`
+     - Password: `exam_platform`
+   - Click **Save**.
+4. Browse the data: expand **Servers → exam-platform → Databases → exam_platform → Schemas → public → Tables**, right-click any table → **View/Edit Data → All Rows**.
+
+The pgAdmin login (`admin@example.com` / `admin`) and the Postgres credentials (`exam_platform` / `exam_platform`) are placeholder defaults suitable for local/internal use — change them in `docker-compose.yml` if this ever runs somewhere less trusted.
 
 ## License
 
