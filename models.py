@@ -35,6 +35,13 @@ class Question(Base):
     updated_at = Column("Updated at", Text)
     usage = Column("Usage", Integer, default=0)
     module = Column("Module", Text)
+    # Free-text knowledge point / topic label (e.g. "Stacks", "Kruskal's
+    # Algorithm"), separate from "Question" (which is a short title and
+    # often doesn't say what the question is actually about, e.g. a title
+    # of "Definitions" gives no hint that it covers stacks). Optional;
+    # purely organisational -- shown in the question list/detail pages,
+    # never used in the exported PDF.
+    topic = Column("Topic", Text)
 
     parts = relationship(
         "QuestionPart",
@@ -57,6 +64,28 @@ class QuestionPart(Base):
     marks = Column("Marks", Integer, nullable=False, default=0)
     answer = Column("Answer", Text)
     answer_space = Column("Answer space", Text, nullable=False, default="half")
+    # One of four component types (see database.py's replace_question_parts
+    # docstring for the full picture):
+    #   "text"     -- free-form answer (the original behaviour). Gradable:
+    #                 carries "Marks" and a lettered (a)/(b)/(c)... label.
+    #   "table"    -- step-by-step/tracing table; `table_spec` holds the
+    #                 column/row definition (JSON-encoded). Gradable.
+    #   "material" -- a block of reading material/stimulus text (reuses
+    #                 `description`), shown inline wherever it sits in the
+    #                 component order. Not gradable: no marks, no letter
+    #                 label, no answer.
+    #   "image"    -- an embedded image (a diagram, graph, screenshot,
+    #                 etc.), stored as base64 in `image_data`. Also not
+    #                 gradable; `description` doubles as an optional
+    #                 caption.
+    part_type = Column("Part type", Text, nullable=False, default="text")
+    table_spec = Column("Table spec", Text)
+    # Base64-encoded raw image bytes for an "image" part, and the original
+    # uploaded filename (kept for display/debugging only -- the actual
+    # embedded format is sniffed from the bytes themselves at export time,
+    # not trusted from this name/extension).
+    image_data = Column("Image data", Text)
+    image_filename = Column("Image filename", Text)
 
 
 class User(Base):

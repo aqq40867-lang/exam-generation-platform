@@ -17,12 +17,14 @@ created yourself in that case).
 
 import os
 import hashlib
+import json
 import secrets
 import string
 from datetime import datetime
 from typing import Optional, Tuple
 
-from sqlalchemy import create_engine, func, or_
+from sqlalchemy import create_engine, func, or_, text
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import IntegrityError
 
@@ -64,6 +66,37 @@ def init_db():
     database, and is a safe no-op on one that already has the tables.
     """
     Base.metadata.create_all(engine)
+
+    # Migration: add "Part type" / "Table spec" to question_parts if this
+    # is an existing database from before the "table"-type sub-question
+    # feature existed -- create_all() only creates missing *tables*, not
+    # missing *columns* on a table that's already there (see the
+    # docstring above), so a question_parts table created by an older
+    # version of this app needs these two columns bolted on explicitly.
+    # Safe to run on every startup; a no-op once both columns exist.
+    inspector = sa_inspect(engine)
+    if "question_parts" in inspector.get_table_names():
+        existing_columns = {col["name"] for col in inspector.get_columns("question_parts")}
+        with engine.begin() as conn:
+            if "Part type" not in existing_columns:
+                conn.execute(text(
+                    "ALTER TABLE question_parts ADD COLUMN \"Part type\" TEXT NOT NULL DEFAULT 'text'"
+                ))
+            if "Table spec" not in existing_columns:
+                conn.execute(text('ALTER TABLE question_parts ADD COLUMN "Table spec" TEXT'))
+            if "Image data" not in existing_columns:
+                conn.execute(text('ALTER TABLE question_parts ADD COLUMN "Image data" TEXT'))
+            if "Image filename" not in existing_columns:
+                conn.execute(text('ALTER TABLE question_parts ADD COLUMN "Image filename" TEXT'))
+
+    # Migration: add "Topic" to questions if this is an existing database
+    # from before the topic/knowledge-point field existed. Same
+    # create_all()-only-creates-missing-tables caveat as above.
+    if "questions" in inspector.get_table_names():
+        existing_question_columns = {col["name"] for col in inspector.get_columns("questions")}
+        if "Topic" not in existing_question_columns:
+            with engine.begin() as conn:
+                conn.execute(text('ALTER TABLE questions ADD COLUMN "Topic" TEXT'))
 
     session = get_session()
     try:
@@ -250,13 +283,29 @@ def update_user_password(username: str, new_password: str) -> bool:
         session.close()
 
 
-def update_user_role(username: str, new_role: str) -> bool:
+def update_user_role(username: str, new_role: str, actor_username: Optional[str] = None) -> bool:
     """Change a user's role. Returns True if a row was updated.
 
     Refuses (returns False, no-op) if the account is protected -- a
     protected account's role is permanently locked as whatever it was
     created with (always "admin" in practice), so it can't be demoted by
-    another admin, accidentally or otherwise."""
+    another admin, accidentally or otherwise.
+
+    Also refuses if `actor_username` (the user *performing* the change,
+    supplied by the caller -- this function has no notion of "who's
+    logged in" on its own) equals `username`: nobody can change their own
+    role, even an admin. This exists as a backend-enforced guard in
+    addition to the admin_users.py page already hiding the control for
+    your own row -- the point is that this is the authoritative check, not
+    just a UI nicety that a direct call could bypass. Without it, an admin
+    demoting themselves would leave their own already-open session's
+    cached role stale until they happened to log out and back in (see the
+    matching "re-verify from DB" notes in admin_users.py / question_list.py
+    for the other half of that problem).
+    """
+    if actor_username is not None and actor_username == username:
+        return False
+
     session = get_session()
     try:
         user = (
@@ -368,6 +417,7 @@ def add_question(question: dict) -> int:
             created_at=question.get("Created at"),
             usage=question.get("Usage", 0),
             module=_normalize_module(question.get("Module")),
+            topic=(question.get("Topic") or "").strip() or None,
         )
         session.add(q)
         session.commit()
@@ -394,6 +444,7 @@ def update_question(question_id: int, updated_question: dict) -> bool:
         q.updated_at = updated_question.get("Updated at")
         q.usage = updated_question.get("Usage", 0)
         q.module = _normalize_module(updated_question.get("Module"))
+        q.topic = (updated_question.get("Topic") or "").strip() or None
         session.commit()
         return True
     finally:
@@ -423,14 +474,48 @@ def list_modules():
     """
     session = get_session()
     try:
+        # NOTE: sorted in Python, not via .order_by(func.lower(...)) --
+        # Postgres rejects a SELECT DISTINCT query whose ORDER BY
+        # expression isn't the exact same expression that's selected
+        # ("ORDER BY expressions must appear in select list"). SQLite is
+        # lenient about this, which is why this only surfaces once the app
+        # runs against real Postgres.
         rows = (
             session.query(Question.module)
             .filter(Question.module.isnot(None), func.trim(Question.module) != "")
             .distinct()
-            .order_by(func.lower(Question.module))
             .all()
         )
-        return [r[0] for r in rows]
+        return sorted((r[0] for r in rows), key=str.lower)
+    finally:
+        session.close()
+
+
+def list_topics(username: str):
+    """Return the sorted list of distinct, non-empty "Topic" values already
+    used across this teacher's own questions.
+
+    "Topic" is a free-text field (not a controlled list), so this exists
+    purely to power an autocomplete suggestion list on the create/edit
+    forms -- it keeps a teacher from typing "Stack" on one question and
+    "Stacks" on another purely by accident, without forcing a rigid
+    taxonomy on them.
+    """
+    session = get_session()
+    try:
+        # See the matching NOTE in list_modules() -- same Postgres
+        # DISTINCT + ORDER BY restriction, sorted in Python instead.
+        rows = (
+            session.query(Question.topic)
+            .filter(
+                Question.created_by == username,
+                Question.topic.isnot(None),
+                func.trim(Question.topic) != "",
+            )
+            .distinct()
+            .all()
+        )
+        return sorted((r[0] for r in rows), key=str.lower)
     finally:
         session.close()
 
@@ -521,7 +606,15 @@ def _label_for_index(index: int) -> str:
 
 
 def get_question_parts(question_id: int):
-    """Return all sub-questions for a main question, in order."""
+    """Return all components belonging to a main question, in order.
+
+    Each dict includes "Part type" ("text", "table", "material", or
+    "image") and, for "table" parts, "Table spec" -- decoded back from
+    JSON into a plain dict/list structure (see replace_question_parts'
+    docstring for its shape). "Table spec" is None for every other type.
+    "material"/"image" parts have "Label" as None (they aren't lettered
+    sub-questions) and "Marks" forced to 0.
+    """
     session = get_session()
     try:
         rows = (
@@ -530,44 +623,110 @@ def get_question_parts(question_id: int):
             .order_by(QuestionPart.order_index.is_(None), QuestionPart.order_index)
             .all()
         )
-        return [_row_to_dict(p) for p in rows]
+        parts = []
+        for p in rows:
+            d = _row_to_dict(p)
+            raw_spec = d.get("Table spec")
+            d["Table spec"] = json.loads(raw_spec) if raw_spec else None
+            parts.append(d)
+        return parts
     finally:
         session.close()
 
 
-def replace_question_parts(question_id: int, parts: list) -> int:
-    """Replace all sub-questions belonging to `question_id` with `parts`.
+_GRADABLE_PART_TYPES = ("text", "table")
+_NON_GRADABLE_PART_TYPES = ("material", "image")
+_ALL_PART_TYPES = _GRADABLE_PART_TYPES + _NON_GRADABLE_PART_TYPES
 
-    `parts` is a list of dicts, each with (at least) "Description" (may be
-    empty/None), "Marks" (int), "Answer" (the sub-question's standard
-    answer) and "Answer space" ('half' or 'full' -- how much blank space to
-    reserve for the student's answer on the exported paper; 'full' forces a
-    page break so the answer gets a whole page to itself), in the desired
-    display order. Labels ((a), (b), (c)...) are (re)assigned automatically
-    from the list order, so callers never need to manage labels themselves.
+
+def replace_question_parts(question_id: int, parts: list) -> int:
+    """Replace all components belonging to `question_id` with `parts`, in
+    the desired display order.
+
+    `parts` is a list of dicts. Every part carries "Part type" -- one of:
+
+        "text"     -- a gradable sub-question. "Description" (may be
+                      empty/None), "Marks" (int), "Answer" (its standard
+                      answer), and "Answer space" ('half' or 'full' -- how
+                      much blank space to reserve on the exported paper;
+                      'full' forces a page break) all apply as before.
+
+        "table"    -- a gradable step-by-step/tracing sub-question.
+                      "Marks" applies; "Table spec" is a plain dict shaped
+                      like:
+                          {
+                              "given_columns": ["Step", "Edge", "Weight"],
+                              "answer_columns": ["Taken?", "Current MST edges"],
+                              "rows": [["1", "P-R", "3", "Yes", "P-R"], ...],
+                          }
+                      "given_columns" are shown filled-in on every export
+                      (information the student is given); "answer_columns"
+                      are left blank on the official/example paper and
+                      filled in on the solutions export. Each row must have
+                      len(given_columns) + len(answer_columns) entries,
+                      given values first. JSON-encoded before storage (a
+                      Postgres Text column, no native JSON column needed).
+                      "Answer" is unused -- the row data carries the answer.
+
+        "material" -- a non-gradable block of reading material/stimulus
+                      text (from "Description"), shown inline wherever it
+                      sits in the order -- not confined to the top of the
+                      question like the parent "Main question" field.
+
+        "image"    -- a non-gradable embedded image. "Image data" is the
+                      raw image bytes, base64-encoded; "Image filename" is
+                      the original uploaded filename (display only --
+                      export sniffs the real format from the bytes).
+                      "Description" doubles as an optional caption.
+
+    Falls back to "text" if "Part type" is missing/unrecognised.
+
+    Only "text" and "table" parts are lettered (a), (b), (c)... and count
+    towards the parent's total marks -- "material"/"image" parts get
+    "Label" set to None and "Marks" forced to 0 regardless of what's
+    passed in, since they're stimulus content, not something a student
+    answers. Callers never need to manage labels themselves; they're
+    (re)assigned from the list order, skipping non-gradable parts.
 
     The parent question's "Marks" column is then set to the sum of the
-    parts' marks (this is the auto total-marks calculation) and the new
-    total is returned. If `parts` is empty, the parent's "Marks" is left
-    untouched and 0 is returned.
+    (gradable) parts' marks and the new total is returned. If `parts` is
+    empty, the parent's "Marks" is left untouched and 0 is returned.
     """
     session = get_session()
     try:
         session.query(QuestionPart).filter(QuestionPart.question_id == question_id).delete()
 
         total_marks = 0
+        letter_index = 0
         for order, part in enumerate(parts):
-            marks = int(part.get("Marks") or 0)
+            part_type = part.get("Part type") if part.get("Part type") in _ALL_PART_TYPES else "text"
+            is_gradable = part_type in _GRADABLE_PART_TYPES
+
+            if is_gradable:
+                label = _label_for_index(letter_index)
+                letter_index += 1
+                marks = int(part.get("Marks") or 0)
+            else:
+                label = None
+                marks = 0
             total_marks += marks
+
             answer_space = part.get("Answer space")
+            table_spec = part.get("Table spec")
+            image_data = part.get("Image data")
+
             session.add(QuestionPart(
                 question_id=question_id,
-                label=_label_for_index(order),
+                label=label,
                 order_index=order,
                 description=part.get("Description"),
                 marks=marks,
-                answer=part.get("Answer"),
+                answer=part.get("Answer") if part_type == "text" else None,
                 answer_space=answer_space if answer_space in ("half", "full") else "half",
+                part_type=part_type,
+                table_spec=json.dumps(table_spec) if (part_type == "table" and table_spec) else None,
+                image_data=image_data if (part_type == "image" and image_data) else None,
+                image_filename=part.get("Image filename") if part_type == "image" else None,
             ))
 
         if parts:

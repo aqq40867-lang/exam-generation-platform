@@ -14,6 +14,7 @@ the template should compile on essentially any TeX Live / MiKTeX
 installation without extra package dependencies.
 """
 
+import base64
 import os
 import shutil
 import subprocess
@@ -40,6 +41,8 @@ _LATEX_SPECIAL_CHARS = {
     "}": r"\}",
     "~": r"\textasciitilde{}",
     "^": r"\textasciicircum{}",
+    "<": r"\textless{}",
+    ">": r"\textgreater{}",
 }
 
 
@@ -71,6 +74,8 @@ _HEADER = r"""\documentclass[12pt]{article}
 \usepackage{amssymb}
 \usepackage{xcolor}
 \usepackage{framed}
+\usepackage{longtable}
+\usepackage{graphicx}
 \definecolor{shadecolor}{gray}{0.92}
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{6pt}
@@ -143,7 +148,162 @@ def _render_solution_block(answer_text) -> str:
     )
 
 
-def _render_question(number: int, question: dict, marks: int, parts: list, mode: str = "official") -> str:
+def _render_table_part(part: dict, mode: str) -> str:
+    """A bordered LaTeX table for a "table"-type part (step-by-step /
+    tracing questions -- see database.py's replace_question_parts
+    docstring for the "Table spec" shape this reads).
+
+    "given_columns" are filled in on every export mode (they're
+    information the student is handed, e.g. the edges of a graph and their
+    weights). "answer_columns" are left blank on official/example papers
+    so the student has somewhere to write, and filled in on the solutions
+    export. Row height is stretched on official/example so there's
+    actually room to write in the blank cells; solutions uses a normal,
+    compact row height since nothing needs to be written by hand there.
+    """
+    spec = part.get("Table spec") or {}
+    given_cols = [str(c) for c in (spec.get("given_columns") or [])]
+    answer_cols = [str(c) for c in (spec.get("answer_columns") or [])]
+    rows = spec.get("rows") or []
+    headers = given_cols + answer_cols
+    n = len(headers)
+
+    if n == 0 or not rows:
+        return escape_latex("(This table has not been configured yet.)")
+
+    col_spec = "|" + "|".join(["l"] * n) + "|"
+    header_row = " & ".join(r"\textbf{%s}" % escape_latex(h) for h in headers) + r" \\ \hline"
+
+    # A plain `tabular` is an atomic box to LaTeX's page breaker: if it
+    # doesn't fit in the space left on the current page, the *whole* table
+    # (not a row) moves to the next page -- so a short table is already
+    # safe. But a table taller than one whole page (a long step-by-step
+    # trace, especially with the extra row height below for handwriting
+    # room) has nowhere to go and silently overflows/gets clipped past the
+    # bottom margin, which is its own version of "the table got cut off".
+    # `longtable` is the standard fix: unlike `tabular`, it's allowed to
+    # break across a page boundary between rows (never mid-row), repeating
+    # the header on each new page so it's still readable.
+    lines = []
+    lines.append(r"\renewcommand{\arraystretch}{%s}" % ("1.3" if mode == "solutions" else "2.4"))
+    lines.append(r"\begingroup\centering")
+    lines.append(r"\begin{longtable}{%s}" % col_spec)
+    lines.append(r"\hline")
+    lines.append(header_row)
+    lines.append(r"\endfirsthead")
+    lines.append(r"\hline")
+    lines.append(header_row)
+    lines.append(r"\multicolumn{%d}{r}{\small\textit{(continued from previous page)}}\\[-2pt]" % n)
+    lines.append(r"\endhead")
+    lines.append(r"\hline")
+    lines.append(
+        r"\multicolumn{%d}{r}{\small\textit{(continued on next page)}}\\" % n
+    )
+    lines.append(r"\endfoot")
+    lines.append(r"\hline")
+    lines.append(r"\endlastfoot")
+    for row in rows:
+        cells = [str(c) for c in row] + [""] * max(0, n - len(row))
+        rendered = []
+        for i in range(n):
+            cell = cells[i] if i < len(cells) else ""
+            if i < len(given_cols) or mode == "solutions":
+                rendered.append(escape_latex(cell))
+            else:
+                rendered.append("")  # blank answer cell for official/example
+        lines.append(" & ".join(rendered) + r" \\ \hline")
+    lines.append(r"\end{longtable}")
+    lines.append(r"\endgroup")
+    lines.append(r"\renewcommand{\arraystretch}{1}")
+    return "\n".join(lines)
+
+
+def _sniff_image_extension(data: bytes) -> str:
+    """Guess a raster image's real format from its bytes, not whatever
+    extension the original upload happened to have -- pdflatex's
+    \\includegraphics picks its loader by file extension, so embedding
+    JPEG bytes under a ".png" name (or vice versa) fails to compile. Falls
+    back to "png" for anything unrecognised; \\includegraphics will then
+    fail loudly (a normal LatexCompileError) rather than silently
+    embedding garbage."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:2] == b"\xff\xd8":
+        return "jpg"
+    return "png"
+
+
+def _collect_image_assets(questions_with_marks: list):
+    """Decode every "image"-type part's base64 "Image data" exactly once,
+    assigning each a short filesystem-safe filename.
+
+    Returns (assets, filenames): `assets` is {filename: raw_bytes}, handed
+    to compile_latex_to_pdf() to write into the compile directory before
+    running the LaTeX engine. `filenames` maps id(part) -> filename, so
+    _render_image_part() can look up the right file while walking the
+    same part dicts -- keyed by Python object identity rather than a
+    database id, since a not-yet-saved preview's parts don't have a
+    database id yet at all.
+    """
+    assets = {}
+    filenames = {}
+    counter = 0
+    for _question, _marks, parts in questions_with_marks:
+        for part in parts:
+            if (part.get("Part type") or "text") != "image":
+                continue
+            raw_b64 = part.get("Image data")
+            if not raw_b64:
+                continue
+            try:
+                data = base64.b64decode(raw_b64)
+            except (ValueError, TypeError):
+                continue
+            counter += 1
+            filename = f"img_{counter}.{_sniff_image_extension(data)}"
+            assets[filename] = data
+            filenames[id(part)] = filename
+    return assets, filenames
+
+
+def _render_material_part(part: dict) -> str:
+    """A non-gradable block of reading material/stimulus text, shown
+    inline wherever it sits in the component order (unlike the parent
+    question's single "Main question" field, which is always pinned to
+    the very top)."""
+    body = part.get("Description")
+    if not body or not str(body).strip():
+        return escape_latex("(This material block is empty.)")
+    return _paragraphs(body)
+
+
+def _render_image_part(part: dict, image_filenames: dict) -> str:
+    """A non-gradable embedded image (a diagram, graph, screenshot, etc.),
+    centered, with its "Description" shown underneath as an optional
+    caption. `image_filenames` is the id(part) -> filename map built by
+    _collect_image_assets() -- the actual file must already have been
+    written into the compile directory by the time this is used."""
+    filename = image_filenames.get(id(part))
+    if not filename:
+        return escape_latex("(This image could not be loaded.)")
+    lines = [
+        r"\begin{center}",
+        r"\includegraphics[width=0.8\linewidth,height=0.5\textheight,keepaspectratio]{%s}" % filename,
+    ]
+    caption = part.get("Description")
+    if caption and str(caption).strip():
+        lines.append(r"\\[4pt]")
+        lines.append(r"{\small\itshape %s}" % escape_latex(caption))
+    lines.append(r"\end{center}")
+    return "\n".join(lines)
+
+
+def _render_question(
+    number: int, question: dict, marks: int, parts: list, mode: str = "official",
+    image_filenames: dict = None,
+) -> str:
+    image_filenames = image_filenames or {}
+
     lines = []
     lines.append(
         r"\noindent\textbf{Question %d} \hfill \textbf{[%d marks]}\\"
@@ -158,7 +318,27 @@ def _render_question(number: int, question: dict, marks: int, parts: list, mode:
 
     if parts:
         lines.append("")
-        lines.append(r"\begin{itemize}")
+
+        # "material"/"image" components are stimulus content, not lettered
+        # sub-questions -- they render as plain content between (rather
+        # than inside) the itemize list, since a mid-list "reading
+        # material" block that got its own bullet and answer space would
+        # be nonsensical. This tracks whether we're currently inside an
+        # open itemize, opening/closing it around runs of gradable parts
+        # so the list environment never has to contain non-item content.
+        in_list = False
+
+        def _open_list():
+            nonlocal in_list
+            if not in_list:
+                lines.append(r"\begin{itemize}")
+                in_list = True
+
+        def _close_list():
+            nonlocal in_list
+            if in_list:
+                lines.append(r"\end{itemize}")
+                in_list = False
 
         # Tracks how many sub-questions have been placed on the current
         # page since the last forced page break, so we can enforce the
@@ -169,12 +349,35 @@ def _render_question(number: int, question: dict, marks: int, parts: list, mode:
 
         for idx, part in enumerate(parts):
             is_last = (idx == len(parts) - 1)
+            part_type = part.get("Part type") or "text"
 
+            if part_type == "material":
+                _close_list()
+                lines.append(_render_material_part(part))
+                lines.append("")
+                continue
+
+            if part_type == "image":
+                _close_list()
+                lines.append(_render_image_part(part, image_filenames))
+                lines.append("")
+                continue
+
+            _open_list()
             label = escape_latex(part.get("Label") or "")
             desc = escape_latex(part.get("Description") or "")
             part_marks = part.get("Marks")
             marks_suffix = r" \hfill \textbf{[%d]}" % part_marks if part_marks else ""
             lines.append(r"\item[(%s)] %s%s" % (label, desc, marks_suffix))
+
+            if part_type == "table":
+                # A table's own rows are its "answer space" -- no blank
+                # \vspace, no "tick here if you continue" line, and no
+                # separate Solution box in "solutions" mode (the table
+                # itself just gets filled in instead).
+                lines.append(_render_table_part(part, mode))
+                lines.append("")
+                continue
 
             if mode == "solutions":
                 lines.append(_render_solution_block(part.get("Answer")))
@@ -204,7 +407,7 @@ def _render_question(number: int, question: dict, marks: int, parts: list, mode:
                     lines.append(r"\newpage")
                     items_since_break = 0
 
-        lines.append(r"\end{itemize}")
+        _close_list()
     else:
         # Plain question with no sub-parts.
         lines.append("")
@@ -238,7 +441,7 @@ def build_latex(
     total_marks: int,
     questions_with_marks: list,
     mode: str = "official",
-) -> str:
+):
     """Build a full .tex document.
 
     `questions_with_marks` is a list of (question_dict, marks, parts_list)
@@ -251,6 +454,12 @@ def build_latex(
     "solutions" (the same questions as "example" but with each answer
     shown inline in a shaded box instead of blank space, for students to
     self-mark against after attempting "example").
+
+    Returns (tex_source, assets): `assets` is {filename: raw_bytes} for
+    every embedded "image"-type part referenced by `tex_source` (via
+    \\includegraphics{filename}) -- pass it straight through to
+    compile_latex_to_pdf() so those files exist in the compile directory.
+    Empty if no question has an image component.
     """
     if mode not in _MODES:
         raise ValueError(f"mode must be one of {_MODES}, got {mode!r}")
@@ -276,8 +485,10 @@ def build_latex(
         "total": total_marks,
     }]
 
+    assets, image_filenames = _collect_image_assets(questions_with_marks)
+
     for i, (question, marks, parts) in enumerate(questions_with_marks, start=1):
-        doc.append(_render_question(i, question, marks, parts, mode))
+        doc.append(_render_question(i, question, marks, parts, mode, image_filenames))
 
     if mode == "official":
         # Blank continuation pages at the end of the printed booklet, for
@@ -287,7 +498,7 @@ def build_latex(
         doc.append(_render_continuation_pages(3))
 
     doc.append(_FOOTER)
-    return "\n".join(doc)
+    return "\n".join(doc), assets
 
 
 # ---------------------------------------------------------------------------
@@ -308,8 +519,14 @@ def find_latex_engine() -> str:
     )
 
 
-def compile_latex_to_pdf(tex_source: str, timeout: int = 60) -> bytes:
+def compile_latex_to_pdf(tex_source: str, timeout: int = 60, assets: dict = None) -> bytes:
     """Compile `tex_source` to a PDF and return the PDF file's bytes.
+
+    `assets` is an optional {filename: raw_bytes} map (as returned by
+    build_latex()) -- e.g. embedded images referenced via
+    \\includegraphics{filename} in `tex_source`. Each is written into the
+    same directory as the .tex file before compiling, so the LaTeX engine
+    can find them by that relative filename.
 
     Raises LatexCompileError if no engine is available or compilation fails.
     """
@@ -319,6 +536,10 @@ def compile_latex_to_pdf(tex_source: str, timeout: int = 60) -> bytes:
         tex_path = os.path.join(tmpdir, "exam.tex")
         with open(tex_path, "w", encoding="utf-8") as f:
             f.write(tex_source)
+
+        for filename, data in (assets or {}).items():
+            with open(os.path.join(tmpdir, filename), "wb") as asset_file:
+                asset_file.write(data)
 
         is_tectonic = os.path.basename(engine).startswith("tectonic")
         result = None

@@ -6,6 +6,7 @@ from database import (
     get_question_parts,
     replace_question_parts,
     get_teacher_modules,
+    list_topics,
 )
 from datetime import datetime
 import string
@@ -55,6 +56,42 @@ def edit_question_page(question_id: int):
     user_question_ids = [q["id"] for q in user_questions]
     display_id = user_question_ids.index(question_id) + 1 if question_id in user_question_ids else question_id
 
+    existing_parts = get_question_parts(question_id)
+
+    # This form only understands plain "text" sub-questions -- it predates
+    # "table"/"material"/"image" components (see create_question.py) and
+    # was never updated to build/display them. If it read a component of
+    # one of those types into the same plain
+    # {description, marks, answer, answer_space} shape used below and the
+    # user hit Save, replace_question_parts() would overwrite the real
+    # question_parts rows with what this form built -- silently discarding
+    # the table's rows / material's text / image's data for good, with no
+    # warning. Rather than risk that, editing is blocked entirely (with an
+    # explanation) whenever any component isn't a plain "text" one.
+    unsupported_types = sorted({
+        (p.get("Part type") or "text") for p in existing_parts
+        if (p.get("Part type") or "text") != "text"
+    })
+    if unsupported_types:
+        with ui.column().classes("w-full max-w-2xl mx-auto p-8 gap-3"):
+            ui.label(f"Edit Question #{display_id}").classes("text-3xl font-bold mb-2")
+            with ui.card().classes("w-full p-6 bg-orange-50"):
+                ui.label("This question can't be edited here yet.").classes("text-lg font-bold")
+                ui.label(
+                    f"It contains a component type this editor doesn't support yet "
+                    f"({', '.join(unsupported_types)}). Editing it here would silently "
+                    f"discard that component's data on save, so editing has been "
+                    f"disabled for this question instead."
+                ).classes("text-sm text-grey-700 mt-1")
+            with ui.row().classes("gap-4"):
+                ui.button("Back to List", on_click=lambda: ui.navigate.to("/questions"))
+                ui.button(
+                    "View Question",
+                    on_click=lambda: ui.navigate.to(f"/questions/{question_id}"),
+                    color="primary",
+                )
+        return
+
     # Load existing sub-questions (if any) into the same in-memory shape
     # used by the create page: a list of {"description": str, "marks": number,
     # "answer": str, "answer_space": number}
@@ -70,7 +107,7 @@ def edit_question_page(question_id: int):
             "answer": p.get("Answer") or "",
             "answer_space": _normalize_answer_space(p.get("Answer space")),
         }
-        for p in get_question_parts(question_id)
+        for p in existing_parts
     ]
 
     with ui.column().classes("w-full max-w-4xl mx-auto p-8"):
@@ -116,6 +153,18 @@ def edit_question_page(question_id: int):
                     "You have no modules assigned yet. Contact your admin to "
                     "get modules assigned to you before selecting one here."
                 ).classes("text-sm text-negative mb-3")
+
+            # Topic / knowledge point (free text, optional) -- separate from
+            # the title, since the title alone often doesn't say what the
+            # question is actually about (e.g. a title of "Definitions"
+            # gives no hint that it covers stacks). Shown as a chip in the
+            # question list/detail pages.
+            ui.label("Topic / Knowledge Point").classes("font-semibold")
+            topic_input = ui.input(
+                value=question.get("Topic", ""),
+                placeholder='e.g. "Stacks", "Kruskal\'s Algorithm", "Binary Search Trees" (optional)',
+                autocomplete=list_topics(username),
+            ).classes("w-full mb-4")
 
             # Optional description / shared context for the main question
             ui.label("Description (optional)").classes("font-semibold")
@@ -277,10 +326,22 @@ def edit_question_page(question_id: int):
                 def save_changes():
                     """Save the updated question."""
 
-                    title = title_input.value.strip()
+                    title = (title_input.value or "").strip()
                     module = (module_input.value or "").strip().upper()
+                    topic = (topic_input.value or "").strip()
                     main_text = (main_text_input.value or "").strip()
-                    answer = answer_input.value.strip()
+                    # answer_input's initial value is question.get("Answer", "")
+                    # -- which is None (not "") whenever the question has
+                    # sub-questions, since the parent's own "Answer" column is
+                    # unused in that case. The field stays hidden but still
+                    # exists in the DOM, so .value is still read here every
+                    # time Save is clicked, even for questions with parts --
+                    # without this guard, editing *any* question that has
+                    # sub-questions crashed this whole handler on this line
+                    # (silently, since NiceGUI just logs synchronous handler
+                    # exceptions server-side -- Save looked like it did
+                    # nothing at all).
+                    answer = (answer_input.value or "").strip()
 
                     # Validate inputs
                     if not title:
@@ -331,6 +392,7 @@ def edit_question_page(question_id: int):
                         "Updated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "Usage": question.get("Usage", 0),
                         "Module": module or None,
+                        "Topic": topic or None,
                     }
 
                     # Update in database

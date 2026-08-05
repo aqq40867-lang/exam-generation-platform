@@ -5,6 +5,7 @@ from database import (
     update_user_role,
     get_teacher_modules,
     set_teacher_modules,
+    get_user_by_username,
 )
 
 
@@ -28,13 +29,27 @@ def admin_users_page():
         ui.navigate.to("/login")
         return
 
+    current_username = app.storage.user["username"]
+
+    # Re-verify the role fresh from the database rather than trusting the
+    # "role" cached in session storage -- that cache is only ever written
+    # once, at login time (see login.py). If this account's role changed
+    # after the session started (by itself or by another admin), the
+    # cached value would still say "admin" until this user happened to
+    # log out and back in. Re-checking here means a revoked admin loses
+    # access on their very next page load instead. Also resyncs the
+    # cache, so other pages reading app.storage.user["role"] this session
+    # (e.g. question_list.py's "User Management" button) see the current
+    # value sooner too.
+    current_user = get_user_by_username(current_username)
+    current_role = current_user.get("Role") if current_user else None
+    app.storage.user["role"] = current_role
+
     # Check role - only admins may view this page
-    if app.storage.user.get("role") != "admin":
+    if current_role != "admin":
         ui.notify("Admins only.", color="negative")
         ui.navigate.to("/questions")
         return
-
-    current_username = app.storage.user["username"]
 
     with ui.column().classes("w-full max-w-4xl mx-auto p-8"):
 
@@ -76,6 +91,7 @@ def admin_users_page():
                 for u in users:
                     username = u["Username"]
                     is_protected = bool(u.get("Protected"))
+                    is_self = username == current_username
 
                     with ui.row().classes(
                         "w-full items-center border-b py-2"
@@ -92,6 +108,20 @@ def admin_users_page():
                             ):
                                 ui.icon("lock").classes("text-grey-500")
                                 ui.label("admin").classes("font-medium")
+                        elif is_self:
+                            # Nobody can change their own role, even an
+                            # admin -- see the matching guard in
+                            # database.py's update_user_role(). Ask another
+                            # admin to do it instead, so a role change
+                            # always has a second person behind it and this
+                            # account's own session can never end up
+                            # holding onto stale admin access after
+                            # demoting itself.
+                            with ui.row().classes("w-40 items-center gap-1").tooltip(
+                                "You can't change your own role — ask another admin to do it."
+                            ):
+                                ui.icon("lock").classes("text-grey-500")
+                                ui.label(u["Role"]).classes("font-medium")
                         else:
                             role_select = ui.select(
                                 ["teacher", "admin"],
@@ -124,7 +154,10 @@ def admin_users_page():
                                                 dialog.close()
 
                                             def confirm():
-                                                update_user_role(username, new_role)
+                                                update_user_role(
+                                                    username, new_role,
+                                                    actor_username=current_username,
+                                                )
                                                 confirmed_role["value"] = new_role
                                                 ui.notify(
                                                     f"{username}'s role updated to {new_role}.",

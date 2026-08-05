@@ -1,7 +1,7 @@
 from collections import Counter
 
 from nicegui import ui, app
-from database import load_questions, delete_question, get_teacher_modules
+from database import load_questions, delete_question, get_teacher_modules, get_user_by_username
 
 
 def question_list_page():
@@ -12,7 +12,16 @@ def question_list_page():
         return
 
     username = app.storage.user["username"]
-    role = app.storage.user.get("role", "teacher")
+
+    # Re-verify the role fresh from the database rather than trusting the
+    # "role" cached in session storage at login time -- see the matching
+    # note in admin_users.py. Keeps the "User Management" button's
+    # visibility (and the "Role:" label below) honest even if this
+    # account's role changed after the current session started, instead
+    # of only catching up the next time this user logs back in.
+    current_user = get_user_by_username(username)
+    role = current_user.get("Role") if current_user else app.storage.user.get("role", "teacher")
+    app.storage.user["role"] = role
 
     ui.label(f"Welcome, {username}").classes("text-2xl font-bold")
     # Read-only: a teacher can see what their own role is, but there's no
@@ -33,7 +42,7 @@ def question_list_page():
             color="secondary"
         )
 
-        if app.storage.user.get("role") == "admin":
+        if role == "admin":
             ui.button(
                 "User Management",
                 on_click=lambda: ui.navigate.to("/admin/users"),
@@ -67,6 +76,7 @@ def question_list_page():
     columns = [
         {"name": "display_id", "label": "ID", "field": "display_id"},
         {"name": "Question", "label": "Question", "field": "Question"},
+        {"name": "Topic", "label": "Topic", "field": "Topic", "align": "center"},
         {"name": "Module", "label": "Module", "field": "Module", "align": "center"},
         {"name": "Status", "label": "Status", "field": "Status"},
         {"name": "Version", "label": "Version", "field": "Version"},
@@ -91,6 +101,7 @@ def question_list_page():
             "id": q["id"],  # real id, used internally for navigation
             "display_id": q["display_id"],
             "Question": q["Question"],
+            "Topic": q.get("Topic") or "—",
             "Module": q.get("Module") or "—",
             "Status": q["Status"],
             "Version": q["Version"],
@@ -184,6 +195,19 @@ def question_list_page():
                     </q-list>
                 </q-menu>
             </q-btn>
+        </q-td>
+    """)
+
+    # Custom "Topic" cell: rendered as a chip rather than plain text, so it
+    # reads as metadata at a glance instead of another text column -- a
+    # question titled e.g. "Definitions" otherwise gives no hint what it's
+    # actually about until you open it.
+    table.add_slot("body-cell-Topic", r"""
+        <q-td :props="props">
+            <q-chip v-if="props.value && props.value !== '—'"
+                    dense square color="blue-1" text-color="blue-9"
+                    :label="props.value" />
+            <span v-else class="text-grey-5">—</span>
         </q-td>
     """)
 

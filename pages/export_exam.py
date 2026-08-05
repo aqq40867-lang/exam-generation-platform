@@ -263,14 +263,24 @@ def export_exam_page():
             safe_name = _safe_filename(name)
 
             if export_mode.value == "official":
-                tex_source = build_latex(name, description, total, questions_with_marks, mode="official")
-                ui.download(tex_source.encode("utf-8"), filename=f"{safe_name}.tex")
+                tex_source, assets = build_latex(name, description, total, questions_with_marks, mode="official")
+                # Bundle any embedded images alongside the .tex source so
+                # someone compiling this elsewhere (e.g. Overleaf) has
+                # everything \includegraphics references, not just the
+                # source text.
+                files = {f"{safe_name}.tex": tex_source, **assets}
+                if assets:
+                    ui.download(_zip_bytes(files), filename=f"{safe_name}_tex.zip")
+                else:
+                    ui.download(tex_source.encode("utf-8"), filename=f"{safe_name}.tex")
             else:
-                example_tex = build_latex(name, description, total, questions_with_marks, mode="example")
-                solutions_tex = build_latex(name, description, total, questions_with_marks, mode="solutions")
+                example_tex, example_assets = build_latex(name, description, total, questions_with_marks, mode="example")
+                solutions_tex, solutions_assets = build_latex(name, description, total, questions_with_marks, mode="solutions")
                 zip_bytes = _zip_bytes({
                     f"{safe_name}_example.tex": example_tex,
                     f"{safe_name}_solutions.tex": solutions_tex,
+                    **example_assets,
+                    **solutions_assets,
                 })
                 ui.download(zip_bytes, filename=f"{safe_name}_revision_pack_tex.zip")
 
@@ -296,8 +306,8 @@ def export_exam_page():
             try:
                 try:
                     if mode == "official":
-                        tex_source = build_latex(name, description, total, questions_with_marks, mode="official")
-                        pdf_bytes = await run.io_bound(compile_latex_to_pdf, tex_source)
+                        tex_source, assets = build_latex(name, description, total, questions_with_marks, mode="official")
+                        pdf_bytes = await run.io_bound(compile_latex_to_pdf, tex_source, 60, assets)
                     else:
                         # "Example + Answers": two separate documents -- a
                         # practice paper (blank answer space, no answers)
@@ -305,10 +315,10 @@ def export_exam_page():
                         # boxes inline) -- zipped together into one download
                         # so a student gets both with a single click but can
                         # look at the example before checking the solutions.
-                        example_tex = build_latex(name, description, total, questions_with_marks, mode="example")
-                        solutions_tex = build_latex(name, description, total, questions_with_marks, mode="solutions")
-                        example_pdf = await run.io_bound(compile_latex_to_pdf, example_tex)
-                        solutions_pdf = await run.io_bound(compile_latex_to_pdf, solutions_tex)
+                        example_tex, example_assets = build_latex(name, description, total, questions_with_marks, mode="example")
+                        solutions_tex, solutions_assets = build_latex(name, description, total, questions_with_marks, mode="solutions")
+                        example_pdf = await run.io_bound(compile_latex_to_pdf, example_tex, 60, example_assets)
+                        solutions_pdf = await run.io_bound(compile_latex_to_pdf, solutions_tex, 60, solutions_assets)
                 except LatexCompileError as exc:
                     ui.notify(str(exc), color="negative", multi_line=True, close_button=True)
                     return
