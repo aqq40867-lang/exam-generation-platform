@@ -104,7 +104,7 @@ def init_db():
                     row.module = normalized
 
         # Migration: some question_parts rows have a garbage "Answer
-        # space" value (e.g. a bare number) instead of 'half'/'full' --
+        # space" value (e.g. a bare number) instead of 'half'/'full' --python database.py
         # likely from data written before the 'half'/'full' convention
         # existed, or edited directly. latex_export.py calls .strip() on
         # this value when building the exported PDF, so anything that
