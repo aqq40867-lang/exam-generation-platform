@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:16-alpine
+    container_name: exam-platform-database
     environment:
       POSTGRES_USER: exam_platform
       POSTGRES_PASSWORD: exam_platform
@@ -18,6 +19,7 @@ services:
 
   exam-platform:
     build: .
+    container_name: exam-platform-app
     ports:
       - "8080:8080"
     environment:
@@ -29,6 +31,7 @@ services:
 
   pgadmin:
     image: dpage/pgadmin4:latest
+    container_name: exam-platform-pgadmin
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@example.com
       PGADMIN_DEFAULT_PASSWORD: admin

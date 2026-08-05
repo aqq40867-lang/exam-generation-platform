@@ -42,6 +42,18 @@ This project is intended for small-scale, personal, or educational use (e.g., a 
 └── docker-compose.yml       # Container run configuration (app + Postgres)
 ```
 
+## Ports
+
+Running via Docker starts three separate services, each on its own port. It's easy to open the wrong one and think something's broken — this table is the quick reference:
+
+| Port | Service | What it is |
+|------|---------|------------|
+| `8080` | exam-platform | **The actual website** — this is what your teachers/students open. |
+| `5432` | postgres | The Postgres database itself. Not a webpage — for connecting a database client (psql, pgAdmin, DBeaver, etc.), not a browser. |
+| `5050` | pgadmin | A web-based database *admin* tool for browsing tables/rows directly. Useful for you as the maintainer, not something end users should need. |
+
+If `docker compose up --build` (with no service name) is run, all three start together. If you open a browser and land on a login page for a database admin tool instead of the exam platform, you're on `5050`, not `8080`.
+
 ## Getting Started
 
 You can run this project either directly with Python, or with Docker (no local Python setup required).

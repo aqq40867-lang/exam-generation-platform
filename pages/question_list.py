@@ -1,7 +1,7 @@
-import json
+from collections import Counter
 
 from nicegui import ui, app
-from database import load_questions, delete_question
+from database import load_questions, delete_question, get_teacher_modules
 
 
 def question_list_page():
@@ -67,7 +67,7 @@ def question_list_page():
     columns = [
         {"name": "display_id", "label": "ID", "field": "display_id"},
         {"name": "Question", "label": "Question", "field": "Question"},
-        {"name": "Module", "label": "Module", "field": "Module", "filterValue": "All modules", "align": "center"},
+        {"name": "Module", "label": "Module", "field": "Module", "align": "center"},
         {"name": "Status", "label": "Status", "field": "Status"},
         {"name": "Version", "label": "Version", "field": "Version"},
         {"name": "Created by", "label": "Created By", "field": "Created by"},
@@ -99,12 +99,17 @@ def question_list_page():
             "Usage": q["Usage"],
         })
 
-    # Modules filter: only lists modules that actually appear among this
-    # user's own questions, plus an "All modules" option. The dropdown lives
-    # inside the Module column's header cell (first row of the table)
-    # rather than as a separate button/control above the table.
-    modules_in_use = sorted({r["Module"] for r in all_rows if r["Module"] != "—"})
-    module_options = ["All modules"] + modules_in_use
+    # Module filter: a left sidebar listing every module this teacher is
+    # assigned to (plus any module already used on one of their questions,
+    # even if it's since been unassigned -- same "don't hide existing data"
+    # principle used on the create/edit question forms), each annotated
+    # with how many of their questions are in it. Clicking a module filters
+    # the table down to just that module; "All Questions" clears the filter.
+    module_counts = Counter(r["Module"] for r in all_rows if r["Module"] != "—")
+    sidebar_modules = sorted(
+        set(get_teacher_modules(username)) | set(module_counts.keys()),
+        key=str.lower,
+    )
 
     table = ui.table(
         columns=columns,
@@ -116,42 +121,41 @@ def question_list_page():
     # "width" percentages set above, instead of auto-sizing to content.
     table.props('table-style="table-layout: fixed; width: 100%"')
 
-    table.add_slot("header-cell-Module", f"""
-        <q-th :props="props" style="width: {equal_width}">
-            <div class="flex flex-center full-width">
-                <q-select
-                    dense
-                    outlined
-                    options-dense
-                    :options='{json.dumps(module_options)}'
-                    v-model="props.col.filterValue"
-                    style="width: 100%; max-width: 140px"
-                    @update:model-value="$parent.$emit('moduleFilter', $event)"
-                />
-            </div>
-        </q-th>
-    """)
+    with ui.left_drawer(value=True, bordered=True).classes("bg-grey-1"):
+        ui.label("MODULES").classes(
+            "text-xs font-bold text-grey-600 tracking-wide px-3 pt-3 pb-1"
+        )
 
-    def apply_module_filter(e):
-        selected = e.args
+        sidebar_items = {}  # module code (or None for "All") -> ui.item element
 
-        # Keep the Module column's filterValue in sync so the header
-        # dropdown keeps displaying whatever was just selected, instead of
-        # snapping back to "All modules" the next time the table re-renders.
-        # Mutate table.columns itself (not the local `columns` variable)
-        # since that's the actual object NiceGUI serializes back to the client.
-        for col in table.columns:
-            if col["name"] == "Module":
-                col["filterValue"] = selected
-                break
+        def set_active(selected_code):
+            for code, item in sidebar_items.items():
+                if code == selected_code:
+                    item.classes(add="bg-primary text-white", remove="text-grey-9")
+                else:
+                    item.classes(remove="bg-primary text-white", add="text-grey-9")
 
-        if selected == "All modules":
-            table.rows = list(all_rows)
-        else:
-            table.rows = [r for r in all_rows if r["Module"] == selected]
-        table.update()
+        def select_module(code):
+            set_active(code)
+            if code is None:
+                table.rows = list(all_rows)
+            else:
+                table.rows = [r for r in all_rows if r["Module"] == code]
+            table.update()
 
-    table.on("moduleFilter", apply_module_filter)
+        with ui.list().props("dense separator").classes("px-1"):
+            sidebar_items[None] = ui.item(
+                f"All Questions ({len(all_rows)})",
+                on_click=lambda: select_module(None),
+            ).classes("rounded-borders cursor-pointer")
+
+            for code in sidebar_modules:
+                sidebar_items[code] = ui.item(
+                    f"{code} ({module_counts.get(code, 0)})",
+                    on_click=lambda code=code: select_module(code),
+                ).classes("rounded-borders cursor-pointer")
+
+        select_module(None)
 
     # Custom "Actions" cell: a dropdown (kebab) menu with View / Edit / Delete
     table.add_slot("body-cell-actions", r"""
