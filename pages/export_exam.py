@@ -1,3 +1,5 @@
+import io
+import zipfile
 from datetime import datetime
 
 from nicegui import ui, app, run
@@ -51,8 +53,19 @@ def export_exam_page():
                 total_marks_input = ui.number(
                     "Full Marks (target total)", value=100, min=1
                 ).classes("w-56")
-                include_answers = ui.checkbox("Include answer key (appendix)")
             exam_description = ui.input("Description (optional)").classes("w-full")
+
+            ui.label("Export as").classes("font-semibold mt-2")
+            export_mode = ui.radio(
+                {
+                    "official": "Official paper — for printing, in the exam hall "
+                                 "(blank answer space + continuation pages at the end)",
+                    "example": "Example + Answers — for revision, not printed "
+                                "(a practice paper plus a matching answer version, "
+                                "so students can self-mark)",
+                },
+                value="official",
+            ).props("inline")
 
         # -- Selection state -----------------------------------------------
         selected_ids: set = set()
@@ -198,7 +211,7 @@ def export_exam_page():
             # The wrapper div isn't disabled, so hovering anywhere over the
             # button's footprint still reaches it and triggers the tooltip.
             with ui.element("div") as generate_wrapper:
-                generate_btn = ui.button("Generate & Download PDF", color="primary")
+                generate_btn = ui.button("Generate & Download", color="primary")
             generate_tooltip = (
                 ui.tooltip("")
                 .props(f'target="#{generate_wrapper.html_id}"')
@@ -231,20 +244,35 @@ def export_exam_page():
 
             return name, description, total, questions_with_marks
 
-        def build_tex_source():
-            name, description, total, questions_with_marks = gather_selected()
-            return name, build_latex(
-                name, description, total, questions_with_marks,
-                include_answers=bool(include_answers.value),
-            )
+        def _safe_filename(name: str) -> str:
+            return "".join(c for c in name if c.isalnum() or c in " _-").strip() or "exam"
+
+        def _zip_bytes(files: dict) -> bytes:
+            """files: {filename: bytes/str}. Returns the zip archive's bytes."""
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for filename, content in files.items():
+                    zf.writestr(filename, content)
+            return buf.getvalue()
 
         async def on_download_tex():
             if not selected_ids:
                 ui.notify("Select at least one question first.", color="warning")
                 return
-            name, tex_source = build_tex_source()
-            safe_name = "".join(c for c in name if c.isalnum() or c in " _-").strip() or "exam"
-            ui.download(tex_source.encode("utf-8"), filename=f"{safe_name}.tex")
+            name, description, total, questions_with_marks = gather_selected()
+            safe_name = _safe_filename(name)
+
+            if export_mode.value == "official":
+                tex_source = build_latex(name, description, total, questions_with_marks, mode="official")
+                ui.download(tex_source.encode("utf-8"), filename=f"{safe_name}.tex")
+            else:
+                example_tex = build_latex(name, description, total, questions_with_marks, mode="example")
+                solutions_tex = build_latex(name, description, total, questions_with_marks, mode="solutions")
+                zip_bytes = _zip_bytes({
+                    f"{safe_name}_example.tex": example_tex,
+                    f"{safe_name}_solutions.tex": solutions_tex,
+                })
+                ui.download(zip_bytes, filename=f"{safe_name}_revision_pack_tex.zip")
 
         async def on_generate():
             total = selected_total()
@@ -260,17 +288,27 @@ def export_exam_page():
                 return
 
             name, description, total, questions_with_marks = gather_selected()
+            mode = export_mode.value
+            safe_name = _safe_filename(name)
 
             generate_btn.disable()
             generate_btn.props("loading")
             try:
-                tex_source = build_latex(
-                    name, description, total, questions_with_marks,
-                    include_answers=bool(include_answers.value),
-                )
-
                 try:
-                    pdf_bytes = await run.io_bound(compile_latex_to_pdf, tex_source)
+                    if mode == "official":
+                        tex_source = build_latex(name, description, total, questions_with_marks, mode="official")
+                        pdf_bytes = await run.io_bound(compile_latex_to_pdf, tex_source)
+                    else:
+                        # "Example + Answers": two separate documents -- a
+                        # practice paper (blank answer space, no answers)
+                        # and a matching solutions version (shaded answer
+                        # boxes inline) -- zipped together into one download
+                        # so a student gets both with a single click but can
+                        # look at the example before checking the solutions.
+                        example_tex = build_latex(name, description, total, questions_with_marks, mode="example")
+                        solutions_tex = build_latex(name, description, total, questions_with_marks, mode="solutions")
+                        example_pdf = await run.io_bound(compile_latex_to_pdf, example_tex)
+                        solutions_pdf = await run.io_bound(compile_latex_to_pdf, solutions_tex)
                 except LatexCompileError as exc:
                     ui.notify(str(exc), color="negative", multi_line=True, close_button=True)
                     return
@@ -281,16 +319,23 @@ def export_exam_page():
                     "Name": name,
                     "Description": description,
                     "Total marks": target,
-                    "Status": "Exported",
+                    "Status": "Exported" if mode == "official" else "Revision Pack",
                     "Created by": username,
                     "Created at": now,
                 })
                 for order, (q, marks, _parts) in enumerate(questions_with_marks):
                     add_question_to_exam(exam_id, q["id"], order=order, marks_override=marks)
 
-                safe_name = "".join(c for c in name if c.isalnum() or c in " _-").strip() or "exam"
-                ui.download(pdf_bytes, filename=f"{safe_name}.pdf")
-                ui.notify("Exam paper generated.", color="positive")
+                if mode == "official":
+                    ui.download(pdf_bytes, filename=f"{safe_name}.pdf")
+                    ui.notify("Exam paper generated.", color="positive")
+                else:
+                    zip_bytes = _zip_bytes({
+                        f"{safe_name}_example.pdf": example_pdf,
+                        f"{safe_name}_solutions.pdf": solutions_pdf,
+                    })
+                    ui.download(zip_bytes, filename=f"{safe_name}_revision_pack.zip")
+                    ui.notify("Example + Answers pack generated.", color="positive")
             finally:
                 generate_btn.props(remove="loading")
                 refresh_status()

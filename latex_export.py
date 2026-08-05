@@ -68,6 +68,10 @@ def _paragraphs(text: str) -> str:
 _HEADER = r"""\documentclass[12pt]{article}
 \usepackage[a4paper, margin=2.5cm]{geometry}
 \usepackage[utf8]{inputenc}
+\usepackage{amssymb}
+\usepackage{xcolor}
+\usepackage{framed}
+\definecolor{shadecolor}{gray}{0.92}
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{6pt}
 
@@ -97,8 +101,49 @@ _FOOTER = r"""
 # than a question's own header/description plus 2 sub-questions.
 _MAX_SUB_QUESTIONS_PER_PAGE = 2
 
+# Printed under every reserved answer-writing area on the "official" paper
+# (matches the wording on the reference Loughborough exam paper): lets a
+# student flag that they've kept writing on one of the blank continuation
+# pages at the end of the booklet (see _render_continuation_pages) instead
+# of running out of room. Doesn't apply to "example"/"solutions" exports --
+# those aren't printed exam booklets a student writes and hands in, so
+# there's no "continuation pages at the back" to point to.
+_TICK_LINE = (
+    r"\noindent\textit{Tick here if you continue at the end of the booklet:}"
+    r"\quad $\Box$\\"
+)
 
-def _render_question(number: int, question: dict, marks: int, parts: list) -> str:
+# The three export modes (see build_latex):
+#   official  -- the real exam paper, printed and handed to students in the
+#                exam hall. Blank answer space, the tick line above, and
+#                blank continuation pages at the end.
+#   example   -- a practice paper for revision, downloaded as a document
+#                (not printed/marked), so no tick line and no continuation
+#                pages. Still has blank answer space so a student can
+#                attempt it before checking the paired "solutions" export.
+#   solutions -- the same questions as "example", but with the standard
+#                answer shown inline in a shaded box under each question
+#                instead of blank space, so a student can self-mark after
+#                attempting the "example" version.
+_MODES = ("official", "example", "solutions")
+
+
+def _render_solution_block(answer_text) -> str:
+    """A shaded "Solution:" box shown inline in place of blank answer
+    space, used by the "solutions" export mode."""
+    if answer_text and str(answer_text).strip():
+        body = _paragraphs(answer_text)
+    else:
+        body = escape_latex("(No standard answer recorded for this question.)")
+    return (
+        r"\begin{shaded}" + "\n"
+        r"\textbf{Solution:}\par\smallskip" + "\n"
+        + body + "\n"
+        r"\end{shaded}"
+    )
+
+
+def _render_question(number: int, question: dict, marks: int, parts: list, mode: str = "official") -> str:
     lines = []
     lines.append(
         r"\noindent\textbf{Question %d} \hfill \textbf{[%d marks]}\\"
@@ -117,7 +162,9 @@ def _render_question(number: int, question: dict, marks: int, parts: list) -> st
 
         # Tracks how many sub-questions have been placed on the current
         # page since the last forced page break, so we can enforce the
-        # "max 2 sub-questions per page" rule below.
+        # "max 2 sub-questions per page" rule below. Only relevant when
+        # blank answer space is actually being reserved (official/example);
+        # "solutions" mode doesn't reserve space so pages fill naturally.
         items_since_break = 0
 
         for idx, part in enumerate(parts):
@@ -129,42 +176,59 @@ def _render_question(number: int, question: dict, marks: int, parts: list) -> st
             marks_suffix = r" \hfill \textbf{[%d]}" % part_marks if part_marks else ""
             lines.append(r"\item[(%s)] %s%s" % (label, desc, marks_suffix))
 
+            if mode == "solutions":
+                lines.append(_render_solution_block(part.get("Answer")))
+                continue
+
             # Reserved blank answer area for this sub-question: either
             # roughly half a page of blank space inline, or a whole blank
             # page to itself (forces a page break; the next content starts
-            # on the page after that).
+            # on the page after that). The "tick here if you continue..."
+            # line only applies to the "official" (printed) paper.
             answer_space = str(part.get("Answer space") or "half").strip().lower()
             if answer_space == "full":
                 lines.append(r"\newpage")
-                lines.append(r"\newpage")
+                if mode == "official":
+                    lines.append(r"\vspace*{\fill}")
+                    lines.append(_TICK_LINE)
+                    lines.append(r"\newpage")
+                else:
+                    lines.append(r"\newpage")
                 items_since_break = 0
             else:
                 lines.append(r"\vspace{0.5\textheight}")
+                if mode == "official":
+                    lines.append(_TICK_LINE)
                 items_since_break += 1
                 if items_since_break >= _MAX_SUB_QUESTIONS_PER_PAGE and not is_last:
                     lines.append(r"\newpage")
                     items_since_break = 0
 
         lines.append(r"\end{itemize}")
+    else:
+        # Plain question with no sub-parts.
+        lines.append("")
+        if mode == "solutions":
+            lines.append(_render_solution_block(question.get("Answer")))
+        else:
+            lines.append(r"\vspace{0.5\textheight}")
+            if mode == "official":
+                lines.append(_TICK_LINE)
 
     lines.append("")
     lines.append(r"\vspace{0.8cm}")
     return "\n".join(lines)
 
 
-def _render_answer_key(questions_with_marks: list) -> str:
-    lines = [r"\newpage", r"\begin{center}{\LARGE \textbf{Answer Key}}\end{center}", r"\vspace{0.4cm}"]
-    for i, (question, marks, parts) in enumerate(questions_with_marks, start=1):
-        lines.append(r"\noindent\textbf{Question %d}\\" % i)
-        answer = question.get("Answer")
-        if answer and str(answer).strip():
-            lines.append(_paragraphs(answer))
-        if parts:
-            for part in parts:
-                if part.get("Answer") and str(part.get("Answer")).strip():
-                    label = escape_latex(part.get("Label") or "")
-                    lines.append(r"\textit{(%s)} %s\\" % (label, _paragraphs(part.get("Answer"))))
-        lines.append(r"\vspace{0.5cm}")
+def _render_continuation_pages(count: int = 3) -> str:
+    """`count` genuinely blank pages appended to the very end of the
+    "official" (printed) booklet, for anyone who ticked "continue at the
+    end of the booklet" on a question and needs more room than what was
+    reserved inline. No label text -- just blank writing space."""
+    lines = []
+    for _ in range(count):
+        lines.append(r"\newpage")
+        lines.append(r"\hspace{0pt}")
     return "\n".join(lines)
 
 
@@ -173,13 +237,24 @@ def build_latex(
     description: str,
     total_marks: int,
     questions_with_marks: list,
-    include_answers: bool = False,
+    mode: str = "official",
 ) -> str:
     """Build a full .tex document.
 
     `questions_with_marks` is a list of (question_dict, marks, parts_list)
     tuples, already in the order they should appear on the paper.
+
+    `mode` is one of "official" (the printed exam paper -- blank answer
+    space, tick lines, blank continuation pages at the end), "example" (a
+    revision/practice paper -- blank answer space but no tick lines or
+    continuation pages, since it isn't printed and handed in), or
+    "solutions" (the same questions as "example" but with each answer
+    shown inline in a shaded box instead of blank space, for students to
+    self-mark against after attempting "example").
     """
+    if mode not in _MODES:
+        raise ValueError(f"mode must be one of {_MODES}, got {mode!r}")
+
     modules = sorted({
         q.get("Module") for q, _, _ in questions_with_marks
         if q.get("Module") and str(q.get("Module")).strip()
@@ -189,6 +264,10 @@ def build_latex(
         subtitle_bits.append(escape_latex(description.strip()))
     if modules:
         subtitle_bits.append(escape_latex("Module(s): " + ", ".join(modules)))
+    if mode == "solutions":
+        subtitle_bits.append(r"\textbf{Solutions}")
+    elif mode == "example":
+        subtitle_bits.append(r"\textit{Example paper for revision}")
     subtitle = r"\\[0.15cm]".join(subtitle_bits)
 
     doc = [_HEADER % {
@@ -198,10 +277,14 @@ def build_latex(
     }]
 
     for i, (question, marks, parts) in enumerate(questions_with_marks, start=1):
-        doc.append(_render_question(i, question, marks, parts))
+        doc.append(_render_question(i, question, marks, parts, mode))
 
-    if include_answers:
-        doc.append(_render_answer_key(questions_with_marks))
+    if mode == "official":
+        # Blank continuation pages at the end of the printed booklet, for
+        # anyone who ticked "continue at the end of the booklet" on a
+        # question. Not needed for "example"/"solutions" -- those aren't
+        # printed and written in.
+        doc.append(_render_continuation_pages(3))
 
     doc.append(_FOOTER)
     return "\n".join(doc)
