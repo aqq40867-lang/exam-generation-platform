@@ -1,9 +1,17 @@
+"""NiceGUI page for self-service account creation."""
+
 from nicegui import ui, app
 from database import create_user
 
 
 def signup_page():
-    """Create New Account page."""
+    """Renders the create-new-account form and handles registration.
+
+    Redirects to the question list immediately if the user is already
+    logged in. Otherwise shows username/password/confirm-password fields
+    and a create-account button that validates the input, creates a new
+    "teacher" role account, and navigates to the login page on success.
+    """
 
     # If already logged in, go directly to question list
     if app.storage.user.get("logged_in"):
@@ -34,6 +42,7 @@ def signup_page():
         ).classes("w-full")
 
         def sign_up():
+            """Validates the form input and creates a new teacher account."""
 
             new_user = new_username.value.strip()
             pwd = new_password.value

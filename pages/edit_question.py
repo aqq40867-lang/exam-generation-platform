@@ -1,3 +1,12 @@
+"""NiceGUI page for editing an existing exam question.
+
+Renders the "Edit Question" form for questions made up of plain "text"
+sub-questions only (or none at all). Questions containing newer component
+types (table/material/image, see create_question.py) are shown a
+read-only notice instead of the edit form, since this page's save logic
+would otherwise silently discard that component data.
+"""
+
 from nicegui import ui, app
 from database import (
     get_question,
@@ -13,7 +22,15 @@ import string
 
 
 def _label_for_index(index: int) -> str:
-    """UK-style lower-case sub-question label: 0 -> 'a', 1 -> 'b', ..."""
+    """Convert a zero-based position into a UK-style lower-case label.
+
+    Args:
+        index: Zero-based position of the sub-question (0, 1, 2, ...).
+
+    Returns:
+        The corresponding label: 0 -> "a", 1 -> "b", ..., 25 -> "z",
+        26 -> "aa", and so on.
+    """
     letters = string.ascii_lowercase
     label = ""
     index += 1
@@ -24,7 +41,17 @@ def _label_for_index(index: int) -> str:
 
 
 def edit_question_page(question_id: int):
-    """Edit existing question page."""
+    """Render the edit form for an existing question, or a block-edit notice.
+
+    Verifies the caller is logged in and is the question's creator, then
+    either renders the edit form for plain "text"-only questions or, if
+    the question contains any newer component type (table/material/
+    image), renders a read-only explanation instead of the form so that
+    saving can't silently discard that component's data.
+
+    Args:
+        question_id: Database id of the question to edit.
+    """
 
     # Check login
     if not app.storage.user.get("logged_in"):
@@ -96,8 +123,17 @@ def edit_question_page(question_id: int):
     # used by the create page: a list of {"description": str, "marks": number,
     # "answer": str, "answer_space": number}
     def _normalize_answer_space(value):
-        """Older rows (or legacy data) may not have a valid 'half'/'full'
-        value yet; fall back to 'half' in that case."""
+        """Coerce a stored answer-space value to a valid option.
+
+        Older rows (or legacy data) may not have a valid "half"/"full"
+        value yet; falls back to "half" in that case.
+
+        Args:
+            value: The raw "Answer space" value read from the database.
+
+        Returns:
+            value unchanged if it is "half" or "full", otherwise "half".
+        """
         return value if value in ("half", "full") else "half"
 
     parts_data = [
@@ -189,6 +225,13 @@ def edit_question_page(question_id: int):
             parts_container = ui.column().classes("w-full gap-2")
 
             def recalc_total():
+                """Recompute total marks from sub-questions and refresh the UI.
+
+                Locks/unlocks the manual Marks field, updates the
+                total-marks label, and toggles visibility of the overall
+                Answer section, in response to sub-questions being added,
+                removed, or having their marks edited.
+                """
                 total = sum((p.get("marks") or 0) for p in parts_data)
                 if parts_data:
                     marks_input.value = total
@@ -201,17 +244,32 @@ def edit_question_page(question_id: int):
                     answer_section.set_visibility(True)
 
             def render_parts():
+                """Redraw the whole sub-questions list from parts_data.
+
+                Clears and rebuilds parts_container so it reflects the
+                current parts_data: one card per sub-question with its
+                description, marks, standard answer, and reserved answer
+                space fields.
+                """
                 parts_container.clear()
                 with parts_container:
+                    # Each make_*_handler below is a small factory that
+                    # closes over this loop iteration's `idx` and returns
+                    # the actual NiceGUI event handler -- needed because a
+                    # plain closure over the loop variable `i` would see
+                    # whatever `i` ended up being after the loop finished,
+                    # not the value at the time the widget was created.
                     for i, part in enumerate(parts_data):
 
                         def make_desc_handler(idx):
+                            """Return a handler that updates sub-question `idx`'s description text."""
                             def handler(e):
                                 parts_data[idx]["description"] = e.value
 
                             return handler
 
                         def make_marks_handler(idx):
+                            """Return a handler that updates sub-question `idx`'s marks and recalculates the total."""
                             def handler(e):
                                 parts_data[idx]["marks"] = e.value or 0
                                 recalc_total()
@@ -219,18 +277,21 @@ def edit_question_page(question_id: int):
                             return handler
 
                         def make_answer_handler(idx):
+                            """Return a handler that updates sub-question `idx`'s standard answer text."""
                             def handler(e):
                                 parts_data[idx]["answer"] = e.value
 
                             return handler
 
                         def make_answer_space_handler(idx):
+                            """Return a handler that updates sub-question `idx`'s reserved answer space."""
                             def handler(e):
                                 parts_data[idx]["answer_space"] = e.value or "half"
 
                             return handler
 
                         def make_remove_handler(idx):
+                            """Return a handler that deletes sub-question `idx` and redraws the list."""
                             def handler():
                                 parts_data.pop(idx)
                                 render_parts()
@@ -274,6 +335,7 @@ def edit_question_page(question_id: int):
                                 ).classes("w-56")
 
             def add_part():
+                """Append a new, empty sub-question and redraw the list."""
                 parts_data.append({
                     "description": "",
                     "marks": 0,
@@ -324,7 +386,16 @@ def edit_question_page(question_id: int):
             with ui.row().classes("gap-4 mt-2"):
 
                 def save_changes():
-                    """Save the updated question."""
+                    """Validate the form and persist the edited question to the database.
+
+                    Re-validates the title/answer/sub-question
+                    requirements, builds the sub-question payload, bumps
+                    the version number, then calls
+                    database.update_question and replace_question_parts
+                    before navigating back to the question list. Shows a
+                    notification and returns early on the first
+                    validation failure encountered.
+                    """
 
                     title = (title_input.value or "").strip()
                     module = (module_input.value or "").strip().upper()

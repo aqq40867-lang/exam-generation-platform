@@ -24,6 +24,14 @@ from database import create_user, get_user_by_username
 
 
 def main():
+    """Parses command-line args and creates the first admin user account.
+
+    Reads the username (and optionally the password) from sys.argv,
+    prompting securely for the password if it wasn't given on the command
+    line, then creates the account with the "admin" role. Exits with
+    status 1 and an error message on any failure (bad usage, empty
+    password, or username already taken).
+    """
     if len(sys.argv) == 2:
         username = sys.argv[1]
         password = getpass.getpass("Password for new admin: ")

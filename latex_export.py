@@ -47,7 +47,16 @@ _LATEX_SPECIAL_CHARS = {
 
 
 def escape_latex(text) -> str:
-    """Escape a plain string so it's safe to drop into LaTeX source."""
+    """Escape a plain string so it's safe to drop into LaTeX source.
+
+    Args:
+        text: Value to escape. Converted with `str()`; `None` becomes an
+            empty string.
+
+    Returns:
+        The input with LaTeX special characters (backslash, &, %, $, #,
+        _, {, }, ~, ^, <, >) replaced by their escaped equivalents.
+    """
     if text is None:
         return ""
     text = str(text)
@@ -55,8 +64,17 @@ def escape_latex(text) -> str:
 
 
 def _paragraphs(text: str) -> str:
-    """Turn blank-line-separated plain text into LaTeX paragraphs, escaping
-    each line first. Single newlines become LaTeX line breaks."""
+    """Convert blank-line-separated plain text into LaTeX paragraphs.
+
+    Each block of text is escaped first; single newlines within a block
+    become LaTeX line breaks rather than starting a new paragraph.
+
+    Args:
+        text: Plain text, with paragraphs separated by a blank line.
+
+    Returns:
+        The escaped text, reassembled as LaTeX paragraphs.
+    """
     escaped = escape_latex(text)
     blocks = [block.strip() for block in escaped.split("\n\n") if block.strip()]
     if not blocks:
@@ -134,8 +152,19 @@ _MODES = ("official", "example", "solutions")
 
 
 def _render_solution_block(answer_text) -> str:
-    """A shaded "Solution:" box shown inline in place of blank answer
-    space, used by the "solutions" export mode."""
+    """Render a shaded "Solution:" box for the "solutions" export mode.
+
+    The box is shown inline in place of the blank answer space used by
+    the "official"/"example" export modes.
+
+    Args:
+        answer_text: The question's or part's recorded standard answer.
+            May be empty or `None`, in which case a placeholder note is
+            rendered instead.
+
+    Returns:
+        LaTeX source for the shaded solution box.
+    """
     if answer_text and str(answer_text).strip():
         body = _paragraphs(answer_text)
     else:
@@ -149,9 +178,11 @@ def _render_solution_block(answer_text) -> str:
 
 
 def _render_table_part(part: dict, mode: str) -> str:
-    """A bordered LaTeX table for a "table"-type part (step-by-step /
-    tracing questions -- see database.py's replace_question_parts
-    docstring for the "Table spec" shape this reads).
+    """Render a bordered LaTeX table for a "table"-type part.
+
+    Used for step-by-step / tracing questions -- see database.py's
+    replace_question_parts docstring for the "Table spec" shape this
+    reads.
 
     "given_columns" are filled in on every export mode (they're
     information the student is handed, e.g. the edges of a graph and their
@@ -160,6 +191,15 @@ def _render_table_part(part: dict, mode: str) -> str:
     export. Row height is stretched on official/example so there's
     actually room to write in the blank cells; solutions uses a normal,
     compact row height since nothing needs to be written by hand there.
+
+    Args:
+        part: The question part dict, expected to hold a "Table spec".
+        mode: Export mode ("official", "example", or "solutions");
+            controls whether answer columns are filled in.
+
+    Returns:
+        LaTeX source for the table, or an escaped placeholder message if
+        the part has no columns or rows configured yet.
     """
     spec = part.get("Table spec") or {}
     given_cols = [str(c) for c in (spec.get("given_columns") or [])]
@@ -219,13 +259,22 @@ def _render_table_part(part: dict, mode: str) -> str:
 
 
 def _sniff_image_extension(data: bytes) -> str:
-    """Guess a raster image's real format from its bytes, not whatever
-    extension the original upload happened to have -- pdflatex's
-    \\includegraphics picks its loader by file extension, so embedding
-    JPEG bytes under a ".png" name (or vice versa) fails to compile. Falls
-    back to "png" for anything unrecognised; \\includegraphics will then
-    fail loudly (a normal LatexCompileError) rather than silently
-    embedding garbage."""
+    """Guess a raster image's real format from its bytes.
+
+    Sniffing avoids trusting whatever extension the original upload
+    happened to have -- pdflatex's \\includegraphics picks its loader by
+    file extension, so embedding JPEG bytes under a ".png" name (or vice
+    versa) fails to compile.
+
+    Args:
+        data: Raw image bytes.
+
+    Returns:
+        A lowercase extension without the leading dot ("png" or "jpg").
+        Falls back to "png" for anything unrecognised; \\includegraphics
+        will then fail loudly (a normal LatexCompileError) rather than
+        silently embedding garbage.
+    """
     if data[:8] == b"\x89PNG\r\n\x1a\n":
         return "png"
     if data[:2] == b"\xff\xd8":
@@ -234,16 +283,22 @@ def _sniff_image_extension(data: bytes) -> str:
 
 
 def _collect_image_assets(questions_with_marks: list):
-    """Decode every "image"-type part's base64 "Image data" exactly once,
-    assigning each a short filesystem-safe filename.
+    """Decode every "image"-type part's base64 image data exactly once.
 
-    Returns (assets, filenames): `assets` is {filename: raw_bytes}, handed
-    to compile_latex_to_pdf() to write into the compile directory before
-    running the LaTeX engine. `filenames` maps id(part) -> filename, so
-    _render_image_part() can look up the right file while walking the
-    same part dicts -- keyed by Python object identity rather than a
-    database id, since a not-yet-saved preview's parts don't have a
-    database id yet at all.
+    Each decoded image is assigned a short filesystem-safe filename.
+
+    Args:
+        questions_with_marks: List of (question_dict, marks, parts_list)
+            tuples, as passed to build_latex().
+
+    Returns:
+        A tuple (assets, filenames): `assets` is {filename: raw_bytes},
+        handed to compile_latex_to_pdf() to write into the compile
+        directory before running the LaTeX engine. `filenames` maps
+        id(part) -> filename, so _render_image_part() can look up the
+        right file while walking the same part dicts -- keyed by Python
+        object identity rather than a database id, since a not-yet-saved
+        preview's parts don't have a database id yet at all.
     """
     assets = {}
     filenames = {}
@@ -267,10 +322,19 @@ def _collect_image_assets(questions_with_marks: list):
 
 
 def _render_material_part(part: dict) -> str:
-    """A non-gradable block of reading material/stimulus text, shown
-    inline wherever it sits in the component order (unlike the parent
-    question's single "Main question" field, which is always pinned to
-    the very top)."""
+    """Render a non-gradable block of reading material/stimulus text.
+
+    The block is shown inline wherever it sits in the component order
+    (unlike the parent question's single "Main question" field, which is
+    always pinned to the very top).
+
+    Args:
+        part: The question part dict, expected to hold a "Description".
+
+    Returns:
+        LaTeX source for the material block, or an escaped placeholder
+        message if the part has no description text.
+    """
     body = part.get("Description")
     if not body or not str(body).strip():
         return escape_latex("(This material block is empty.)")
@@ -278,11 +342,22 @@ def _render_material_part(part: dict) -> str:
 
 
 def _render_image_part(part: dict, image_filenames: dict) -> str:
-    """A non-gradable embedded image (a diagram, graph, screenshot, etc.),
-    centered, with its "Description" shown underneath as an optional
-    caption. `image_filenames` is the id(part) -> filename map built by
-    _collect_image_assets() -- the actual file must already have been
-    written into the compile directory by the time this is used."""
+    """Render a non-gradable embedded image, centered on the page.
+
+    The part's "Description", if any, is shown underneath as an optional
+    caption.
+
+    Args:
+        part: The question part dict for this "image"-type part.
+        image_filenames: The id(part) -> filename map built by
+            _collect_image_assets(). The actual file must already have
+            been written into the compile directory by the time this is
+            used.
+
+    Returns:
+        LaTeX source for the centered image, or an escaped placeholder
+        message if no matching file was found.
+    """
     filename = image_filenames.get(id(part))
     if not filename:
         return escape_latex("(This image could not be loaded.)")
@@ -302,6 +377,34 @@ def _render_question(
     number: int, question: dict, marks: int, parts: list, mode: str = "official",
     image_filenames: dict = None,
 ) -> str:
+    """Render one full exam question, including all of its parts.
+
+    Renders the question's own text/context, then walks its parts in
+    order: material/image stimulus content is rendered inline, and
+    lettered sub-questions are rendered inside an itemize list, each with
+    reserved blank answer space (or a shaded solution box, in
+    "solutions" mode). If the question has no parts, the same blank
+    space / solution box is reserved for the question as a whole.
+
+    Args:
+        number: The question's 1-based position on the paper, used for
+            its "Question N" heading.
+        question: The question dict, as stored in the question bank.
+        marks: The marks this question is worth on this particular exam,
+            which may differ from the question's own default "Marks"
+            value.
+        parts: The question's ordered list of part dicts (sub-questions,
+            material, and image components).
+        mode: Export mode -- "official", "example", or "solutions".
+            Controls whether blank answer space, tick lines, or inline
+            solution boxes are rendered.
+        image_filenames: The id(part) -> filename map built by
+            _collect_image_assets(), used to resolve "image"-type parts.
+
+    Returns:
+        LaTeX source for the whole question, including its trailing
+        vertical spacing.
+    """
     image_filenames = image_filenames or {}
 
     lines = []
@@ -424,10 +527,18 @@ def _render_question(
 
 
 def _render_continuation_pages(count: int = 3) -> str:
-    """`count` genuinely blank pages appended to the very end of the
-    "official" (printed) booklet, for anyone who ticked "continue at the
-    end of the booklet" on a question and needs more room than what was
-    reserved inline. No label text -- just blank writing space."""
+    """Render blank pages appended to the end of the "official" booklet.
+
+    These give students who ticked "continue at the end of the booklet"
+    on a question extra room beyond what was reserved inline. No label
+    text -- just blank writing space.
+
+    Args:
+        count: Number of blank pages to append.
+
+    Returns:
+        LaTeX source for `count` blank pages.
+    """
     lines = []
     for _ in range(count):
         lines.append(r"\newpage")
@@ -442,24 +553,35 @@ def build_latex(
     questions_with_marks: list,
     mode: str = "official",
 ):
-    """Build a full .tex document.
+    """Build a full .tex document for an exam paper.
 
-    `questions_with_marks` is a list of (question_dict, marks, parts_list)
-    tuples, already in the order they should appear on the paper.
+    Args:
+        name: The exam's title, shown at the top of the paper.
+        description: Optional free-text subtitle/description.
+        total_marks: The paper's target total marks, shown under the
+            title.
+        questions_with_marks: List of (question_dict, marks, parts_list)
+            tuples, already in the order they should appear on the
+            paper.
+        mode: One of "official" (the printed exam paper -- blank answer
+            space, tick lines, blank continuation pages at the end),
+            "example" (a revision/practice paper -- blank answer space
+            but no tick lines or continuation pages, since it isn't
+            printed and handed in), or "solutions" (the same questions
+            as "example" but with each answer shown inline in a shaded
+            box instead of blank space, for students to self-mark
+            against after attempting "example").
 
-    `mode` is one of "official" (the printed exam paper -- blank answer
-    space, tick lines, blank continuation pages at the end), "example" (a
-    revision/practice paper -- blank answer space but no tick lines or
-    continuation pages, since it isn't printed and handed in), or
-    "solutions" (the same questions as "example" but with each answer
-    shown inline in a shaded box instead of blank space, for students to
-    self-mark against after attempting "example").
+    Returns:
+        A tuple (tex_source, assets): `assets` is {filename: raw_bytes}
+        for every embedded "image"-type part referenced by `tex_source`
+        (via \\includegraphics{filename}) -- pass it straight through to
+        compile_latex_to_pdf() so those files exist in the compile
+        directory. Empty if no question has an image component.
 
-    Returns (tex_source, assets): `assets` is {filename: raw_bytes} for
-    every embedded "image"-type part referenced by `tex_source` (via
-    \\includegraphics{filename}) -- pass it straight through to
-    compile_latex_to_pdf() so those files exist in the compile directory.
-    Empty if no question has an image component.
+    Raises:
+        ValueError: If `mode` is not one of "official", "example", or
+            "solutions".
     """
     if mode not in _MODES:
         raise ValueError(f"mode must be one of {_MODES}, got {mode!r}")
@@ -506,7 +628,17 @@ def build_latex(
 # ---------------------------------------------------------------------------
 
 def find_latex_engine() -> str:
-    """Return the path to the first available LaTeX engine, or raise."""
+    """Find an available LaTeX engine on this machine.
+
+    Checks for pdflatex, xelatex, and tectonic, in that order.
+
+    Returns:
+        The full path to the first available engine found.
+
+    Raises:
+        LatexCompileError: If none of the supported engines are
+            installed.
+    """
     for engine in ("pdflatex", "xelatex", "tectonic"):
         path = shutil.which(engine)
         if path:
@@ -520,15 +652,25 @@ def find_latex_engine() -> str:
 
 
 def compile_latex_to_pdf(tex_source: str, timeout: int = 60, assets: dict = None) -> bytes:
-    """Compile `tex_source` to a PDF and return the PDF file's bytes.
+    """Compile LaTeX source to a PDF.
 
-    `assets` is an optional {filename: raw_bytes} map (as returned by
-    build_latex()) -- e.g. embedded images referenced via
-    \\includegraphics{filename} in `tex_source`. Each is written into the
-    same directory as the .tex file before compiling, so the LaTeX engine
-    can find them by that relative filename.
+    Args:
+        tex_source: The full .tex document source, as produced by
+            build_latex().
+        timeout: Seconds to allow each LaTeX engine invocation to run
+            before giving up.
+        assets: Optional {filename: raw_bytes} map (as returned by
+            build_latex()) -- e.g. embedded images referenced via
+            \\includegraphics{filename} in `tex_source`. Each is written
+            into the same directory as the .tex file before compiling,
+            so the LaTeX engine can find them by that relative filename.
 
-    Raises LatexCompileError if no engine is available or compilation fails.
+    Returns:
+        The compiled PDF file's raw bytes.
+
+    Raises:
+        LatexCompileError: If no LaTeX engine is available, compilation
+            fails, or compilation times out.
     """
     engine = find_latex_engine()
 

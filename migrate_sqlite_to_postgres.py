@@ -53,7 +53,15 @@ SQLITE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exam_pla
 
 
 def _sqlite_rows(table: str):
-    """Yield every row of `table` from the old SQLite file as a dict."""
+    """Yields every row of a table from the old SQLite file as a dict.
+
+    Args:
+        table: Name of the SQLite table to read.
+
+    Yields:
+        Each row as a dict keyed by column name. Yields nothing if the
+        SQLite file doesn't exist.
+    """
     if not os.path.exists(SQLITE_PATH):
         print(f"No {SQLITE_PATH} found -- nothing to migrate.")
         return
@@ -67,11 +75,18 @@ def _sqlite_rows(table: str):
 
 
 def _bump_sequence(session, table: str):
-    """Advance Postgres's auto-increment sequence for `table` past the
-    highest id we just inserted, so the app's next INSERT (which doesn't
-    specify an id) doesn't collide with migrated rows. Only meaningful on
+    """Advances a Postgres table's auto-increment sequence past its max id.
+
+    This is needed so the app's next INSERT (which doesn't specify an id)
+    doesn't collide with the rows just migrated. Only meaningful on
     Postgres (SQLite has no sequences to bump -- e.g. if DATABASE_URL is
-    pointed at a sqlite:/// URL for a quick local test of this script)."""
+    pointed at a sqlite:/// URL for a quick local test of this script), so
+    this is a no-op on any other dialect.
+
+    Args:
+        session: Active SQLAlchemy session to execute the sequence update on.
+        table: Name of the table whose "id" sequence should be advanced.
+    """
     if session.get_bind().dialect.name != "postgresql":
         return
     session.execute(text(
@@ -82,6 +97,19 @@ def _bump_sequence(session, table: str):
 
 
 def migrate():
+    """Copies all rows from the SQLite database into Postgres.
+
+    Reads every table from the old exam_platform.db SQLite file and
+    inserts the rows into the Postgres database configured via
+    DATABASE_URL, preserving original row IDs, then bumps each table's
+    auto-increment sequence past the highest migrated id. Prints a
+    per-table row count and a completion message when done. Does nothing
+    (and prints a message) if the SQLite file isn't found.
+
+    Raises:
+        Exception: Re-raised after rolling back the session if any insert
+            fails (e.g. because Postgres already has conflicting data).
+    """
     if not os.path.exists(SQLITE_PATH):
         print(f"No {SQLITE_PATH} found next to this script -- nothing to migrate.")
         return

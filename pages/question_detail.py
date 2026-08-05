@@ -1,3 +1,11 @@
+"""NiceGUI page for viewing a single question's full detail.
+
+Shows the question's content (main text, sub-questions and their
+answers, and any table/image/material components) up front, with a PDF
+preview action and a collapsed "bookkeeping" section for secondary
+metadata (status, version, usage, timestamps).
+"""
+
 import mimetypes
 
 from nicegui import ui, app, run
@@ -6,10 +14,16 @@ from latex_export import build_latex, compile_latex_to_pdf, LatexCompileError
 
 
 def _render_part_table(part: dict):
-    """Render a "table"-type sub-question's given/answer columns and rows
-    as an actual grid (see database.py's replace_question_parts docstring
-    for the "Table spec" shape), so its content is visible on this page
-    without having to open Edit to find out what the table holds."""
+    """Render a "table"-type sub-question's rows/columns as a grid.
+
+    Lets the table's content be seen directly on this page without
+    having to open Edit to find out what it holds. See database.py's
+    replace_question_parts docstring for the "Table spec" shape this
+    reads.
+
+    Args:
+        part: The question part dict, expected to hold a "Table spec".
+    """
     spec = part.get("Table spec") or {}
     given_cols = spec.get("given_columns") or []
     answer_cols = spec.get("answer_columns") or []
@@ -45,10 +59,16 @@ def _render_part_table(part: dict):
 
 
 def _render_part_image(part: dict):
-    """Render an "image"-type component's embedded picture + optional
-    caption, so it's visible on this page without opening Edit (which, for
-    a question containing one of these, is blocked anyway -- see
-    edit_question.py)."""
+    """Render an "image"-type component's embedded picture and caption.
+
+    Lets the image be seen directly on this page without opening Edit
+    (which, for a question containing one of these, is blocked anyway --
+    see edit_question.py).
+
+    Args:
+        part: The question part dict, expected to hold "Image data" and
+            an optional "Description" caption.
+    """
     image_data = part.get("Image data")
     if not image_data:
         ui.label("(No image uploaded yet.)").classes("text-sm text-grey-500 italic mt-1")
@@ -61,7 +81,7 @@ def _render_part_image(part: dict):
 
 
 def question_detail_page(question_id: int):
-    """View question detail page.
+    """Render the question detail page.
 
     Laid out as "content first, bookkeeping second": what the question
     actually asks and what its answer(s) are is the whole reason to open
@@ -70,6 +90,12 @@ def question_detail_page(question_id: int):
     this page didn't render at all. Status/version/usage/timestamps are
     real but secondary, so they're collapsed into a details section
     instead of interleaved at equal visual weight with the actual content.
+
+    Args:
+        question_id: The database id of the question to display, taken
+            from the page route. Redirects to the question list if the
+            user isn't logged in, the question doesn't exist, or the
+            current user isn't its creator.
     """
 
     # Check login
@@ -179,6 +205,13 @@ def question_detail_page(question_id: int):
             preview_ref = {}
 
             async def on_preview():
+                """Compile this question to a PDF and offer it for download.
+
+                Builds a single-question "example"-mode export via
+                build_latex()/compile_latex_to_pdf(), then triggers a
+                browser download of the result, or shows a notification
+                if compilation fails.
+                """
                 marks = question.get("Marks") or 0
                 # NOTE: kept in English -- this string is baked straight
                 # into the LaTeX source and compiled with pdflatex, which
@@ -254,8 +287,8 @@ def question_detail_page(question_id: int):
                 color="primary"
             )
 
-            # Delete button with confirmation
             def confirm_delete():
+                """Show a confirmation dialog before deleting this question."""
                 with ui.dialog() as dialog, ui.card():
                     ui.label("Delete this question?").classes("text-lg")
                     ui.label("This action cannot be undone.").classes("text-sm text-grey-600")
@@ -267,6 +300,7 @@ def question_detail_page(question_id: int):
                         )
 
                         def delete_question_confirmed():
+                            """Delete the question, close the dialog, and return to the list."""
                             delete_question(question_id)
                             dialog.close()
                             ui.notify("Question deleted successfully.", color="positive")

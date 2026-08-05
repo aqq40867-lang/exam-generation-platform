@@ -288,6 +288,14 @@ QUESTIONS = [
 
 
 def main():
+    """Inserts the sample Algorithms and Data Structures exam into the bank.
+
+    Looks up the target teacher account (from sys.argv or defaulting to
+    "Yan"), makes sure MODULE is among their assigned modules, then
+    creates each entry in QUESTIONS as a Draft question with its parts,
+    printing a summary of what was created. Exits with status 1 if the
+    given username doesn't exist.
+    """
     username = sys.argv[1] if len(sys.argv) > 1 else "Yan"
 
     if not get_user_by_username(username):

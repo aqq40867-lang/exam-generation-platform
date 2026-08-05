@@ -21,6 +21,8 @@ Base = declarative_base()
 
 
 class Question(Base):
+    """A single exam question, optionally split into graded sub-parts."""
+
     __tablename__ = "questions"
 
     id = Column(Integer, primary_key=True)
@@ -89,6 +91,8 @@ class QuestionPart(Base):
 
 
 class User(Base):
+    """A login account (teacher or admin) for the exam platform."""
+
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True)
@@ -102,6 +106,8 @@ class User(Base):
 
 
 class Exam(Base):
+    """An exam paper assembled from a selection of questions."""
+
     __tablename__ = "exams"
 
     id = Column(Integer, primary_key=True)
@@ -143,10 +149,17 @@ class TeacherModule(Base):
 
 @event.listens_for(Engine, "connect")
 def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):
-    """Only relevant if this is ever pointed at a SQLite file (e.g. quick
+    """Turns on SQLite foreign-key enforcement for a newly opened connection.
+
+    Only relevant if this is ever pointed at a SQLite file (e.g. quick
     local testing without a real Postgres instance running). Postgres
     enforces foreign keys by default; SQLite needs this pragma set on
-    every new connection or ON DELETE CASCADE silently does nothing."""
+    every new connection or ON DELETE CASCADE silently does nothing.
+
+    Args:
+        dbapi_connection: The raw DB-API connection just opened.
+        connection_record: SQLAlchemy connection pool record (unused).
+    """
     if type(dbapi_connection).__module__.startswith("sqlite3"):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
@@ -154,17 +167,24 @@ def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):
 
 
 def _row_to_dict(obj) -> dict:
-    """Convert any model instance into a plain dict keyed by the
-    *original* DB column names (not the Python attribute names), e.g.
-    {"id": 1, "Question": "...", "Main question": ..., "Module": "CO923"}.
-    Returns None if `obj` is None. This is what makes every page in
-    pages/*.py (which does question.get("Question"), q.get("Module")
-    etc.) keep working unmodified against the ORM-backed database.py.
+    """Converts any model instance into a plain dict keyed by DB column names.
+
+    Keys are the *original* DB column names (not the Python attribute
+    names), e.g. {"id": 1, "Question": "...", "Main question": ...,
+    "Module": "CO923"}. This is what makes every page in pages/*.py (which
+    does question.get("Question"), q.get("Module") etc.) keep working
+    unmodified against the ORM-backed database.py.
 
     Uses the ORM mapper (not obj.__table__.columns directly) because a
     Core Column's own .key defaults to its DB column name ("Question"),
     not the Python attribute name ("question") -- the mapper is what
     actually knows the attribute-name <-> DB-column-name pairing.
+
+    Args:
+        obj: A model instance (e.g. a Question or User), or None.
+
+    Returns:
+        A dict of DB column name to value, or None if `obj` is None.
     """
     if obj is None:
         return None

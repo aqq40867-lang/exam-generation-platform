@@ -1,3 +1,12 @@
+"""NiceGUI page for creating a new exam question.
+
+Renders the "Create New Question" form, built around an ordered list of
+components (Text, Table, Material, Image) that a teacher assembles freely.
+Handles client-side validation, PDF preview generation via latex_export,
+and persisting the finished question with database.add_question /
+replace_question_parts.
+"""
+
 import base64
 import mimetypes
 import string
@@ -27,7 +36,15 @@ _MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
 
 
 def _label_for_index(index: int) -> str:
-    """UK-style lower-case sub-question label: 0 -> 'a', 1 -> 'b', ..."""
+    """Convert a zero-based position into a UK-style lower-case label.
+
+    Args:
+        index: Zero-based position of the sub-question (0, 1, 2, ...).
+
+    Returns:
+        The corresponding label: 0 -> "a", 1 -> "b", ..., 25 -> "z",
+        26 -> "aa", and so on.
+    """
     letters = string.ascii_lowercase
     label = ""
     index += 1
@@ -38,11 +55,21 @@ def _label_for_index(index: int) -> str:
 
 
 def _labels_for(parts_data: list) -> list:
-    """Return one label per entry in `parts_data`, in order: the next
-    letter ('a', 'b', 'c', ...) for a gradable ("text"/"table") component,
-    or None for a non-gradable ("material"/"image") one -- matching
-    exactly how database.py's replace_question_parts assigns labels when
-    actually saving, so what's previewed here is what gets saved."""
+    """Compute the display label for each component in order.
+
+    Mirrors exactly how database.py's replace_question_parts assigns
+    labels when actually saving, so what's previewed here is what gets
+    saved.
+
+    Args:
+        parts_data: The page's in-memory list of component dicts, each
+            with a "part_type" key.
+
+    Returns:
+        A list with one entry per item in parts_data: the next letter
+        ("a", "b", "c", ...) for a gradable ("text"/"table") component, or
+        None for a non-gradable ("material"/"image") one.
+    """
     labels = []
     counter = 0
     for p in parts_data:
@@ -55,19 +82,36 @@ def _labels_for(parts_data: list) -> list:
 
 
 def _parse_table_spec(given_text: str, answer_text: str, rows_text: str) -> dict:
-    """Parse the three plain-text fields behind a "table"-type component
+    """Parse a "table"-type component's plain-text fields into structured form.
+
+    Converts the three plain-text fields behind a "table"-type component
     into the {"given_columns", "answer_columns", "rows"} shape that
     database.py's replace_question_parts / latex_export.py's table
     renderer expect.
 
     Columns are typed as a single "|"-separated line each (e.g.
     "Step | Edge | Weight"); rows are one per line, also "|"-separated, in
-    "given columns first, then answer columns" order. Raises ValueError
-    with a user-facing message if a row doesn't have exactly as many
-    values as there are declared columns -- this is intentionally the only
-    structural check; empty tables/columns are allowed here and are
-    instead flagged as a *validation* error (not a parse error) so the
-    Save button's tooltip can explain what's still missing.
+    "given columns first, then answer columns" order. This is
+    intentionally the only structural check performed; empty
+    tables/columns are allowed here and are instead flagged as a
+    *validation* error (not a parse error) so the Save button's tooltip
+    can explain what's still missing.
+
+    Args:
+        given_text: Raw "|"-separated line of given (visible) column
+            names.
+        answer_text: Raw "|"-separated line of answer (blank-to-fill)
+            column names.
+        rows_text: Raw row data, one "|"-separated row per line, given
+            columns first then answer columns.
+
+    Returns:
+        A dict with "given_columns", "answer_columns", and "rows" keys.
+
+    Raises:
+        ValueError: If a row doesn't have exactly as many values as there
+            are declared columns. The message is user-facing and safe to
+            show directly via ui.notify.
     """
     given_cols = [c.strip() for c in (given_text or "").split("|") if c.strip()]
     answer_cols = [c.strip() for c in (answer_text or "").split("|") if c.strip()]
@@ -89,19 +133,31 @@ def _parse_table_spec(given_text: str, answer_text: str, rows_text: str) -> dict
 
 
 def _build_part_dict(label, part: dict, *, for_preview: bool) -> dict:
-    """Build the dict shape build_latex() / replace_question_parts()
-    expect for one component, from its raw create-page state.
+    """Build the dict shape build_latex() / replace_question_parts() expect.
 
-    `label` is this component's precomputed letter (from _labels_for()) or
-    None for a non-gradable component.
+    Converts one component's raw create-page state into the normalized
+    dict shape used both for the PDF preview and for the actual save.
 
-    Raises ValueError (with a user-facing message, safe to show directly
-    via ui.notify) if it's a "table" component whose row data doesn't line
-    up with its declared columns. Nothing else can fail here.
+    Args:
+        label: This component's precomputed letter (from _labels_for()),
+            or None for a non-gradable component.
+        part: The raw in-memory state dict for this single component.
+        for_preview: If True, fills in placeholder text for still-empty
+            fields so an incomplete question can still be previewed. If
+            False (used when actually saving), leaves them as None
+            instead.
 
-    `for_preview=True` fills in placeholder text for still-empty fields
-    (so an incomplete question can still be previewed); `for_preview=False`
-    (used when actually saving) leaves them as None instead.
+    Returns:
+        A dict with the keys expected by build_latex() /
+        replace_question_parts() ("Label", "Description", "Marks",
+        "Answer space", "Part type", "Table spec", "Answer", "Image data",
+        "Image filename").
+
+    Raises:
+        ValueError: If it's a "table" component whose row data doesn't
+            line up with its declared columns. The message is
+            user-facing and safe to show directly via ui.notify. Nothing
+            else can fail here.
     """
     part_type = part.get("part_type", "text")
     description = (part.get("description") or "").strip()
@@ -263,6 +319,13 @@ def create_question_page():
             parts_container = ui.column().classes("w-full gap-2")
 
             def recalc_total():
+                """Recompute total marks from gradable components and refresh the UI.
+
+                Locks/unlocks the manual Marks field, updates the total-marks
+                label, toggles visibility of the overall-answer section, and
+                triggers validation -- all in response to components being
+                added, removed, or having their marks edited.
+                """
                 total = sum((p.get("marks") or 0) for p in parts_data if p.get("part_type", "text") in _GRADABLE_TYPES)
                 if parts_data:
                     marks_input.value = total
@@ -276,6 +339,14 @@ def create_question_page():
                 refresh_validation()
 
             def render_parts():
+                """Redraw the whole components list from parts_data.
+
+                Clears and rebuilds parts_container so it reflects the
+                current parts_data: one collapsible ui.expansion per
+                component, with a one-line summary header and, when
+                expanded, the type-specific editor fields for that
+                component.
+                """
                 parts_container.clear()
                 with parts_container:
                     if not parts_data:
@@ -285,9 +356,17 @@ def create_question_page():
 
                     labels = _labels_for(parts_data)
 
+                    # Each of the make_*_handler functions below is a small
+                    # factory that closes over this loop iteration's `idx`
+                    # (and, for the table fields, `field`) and returns the
+                    # actual NiceGUI event handler -- needed because a
+                    # plain closure over the loop variable `i` would see
+                    # whatever `i` ended up being after the loop finished,
+                    # not the value at the time the widget was created.
                     for i, (label, part) in enumerate(zip(labels, parts_data)):
 
                         def make_desc_handler(idx):
+                            """Return a handler that updates component `idx`'s description text."""
                             def handler(e):
                                 parts_data[idx]["description"] = e.value
                                 refresh_validation()
@@ -295,6 +374,7 @@ def create_question_page():
                             return handler
 
                         def make_marks_handler(idx):
+                            """Return a handler that updates component `idx`'s marks and recalculates the total."""
                             def handler(e):
                                 parts_data[idx]["marks"] = e.value or 0
                                 recalc_total()
@@ -302,6 +382,7 @@ def create_question_page():
                             return handler
 
                         def make_answer_handler(idx):
+                            """Return a handler that updates component `idx`'s standard answer text."""
                             def handler(e):
                                 parts_data[idx]["answer"] = e.value
                                 refresh_validation()
@@ -309,25 +390,30 @@ def create_question_page():
                             return handler
 
                         def make_space_handler(idx):
+                            """Return a handler that updates component `idx`'s reserved answer space."""
                             def handler(e):
                                 parts_data[idx]["answer_space"] = e.value
 
                             return handler
 
                         def make_part_type_handler(idx):
+                            """Return a handler that switches component `idx` to a different type.
+
+                            Unlike marks/description/answer edits, a type
+                            change rebuilds the whole components list
+                            (rather than just poking the backing dict)
+                            because the editor fields shown look
+                            completely different per type.
+                            """
                             def handler(e):
                                 parts_data[idx]["part_type"] = e.value
-                                # the editor below looks completely
-                                # different per type, so this one -- unlike
-                                # marks/description/answer -- rebuilds the
-                                # list instead of just poking the backing
-                                # dict.
                                 render_parts()
                                 recalc_total()
 
                             return handler
 
                         def make_table_field_handler(idx, field):
+                            """Return a handler that updates one raw text field of component `idx`'s table spec."""
                             def handler(e):
                                 parts_data[idx][field] = e.value
                                 refresh_validation()
@@ -335,6 +421,12 @@ def create_question_page():
                             return handler
 
                         def make_image_upload_handler(idx):
+                            """Return a handler that stores an uploaded image on component `idx`.
+
+                            Reads the uploaded file, base64-encodes it into
+                            parts_data, and rejects (with a warning) an
+                            empty file.
+                            """
                             async def handler(e):
                                 data = await e.file.read()
                                 if not data:
@@ -348,6 +440,7 @@ def create_question_page():
                             return handler
 
                         def make_remove_handler(idx):
+                            """Return a handler that deletes component `idx` and redraws the list."""
                             def handler():
                                 parts_data.pop(idx)
                                 render_parts()
@@ -397,6 +490,7 @@ def create_question_page():
                         ).classes("w-full border") as exp:
 
                             def make_expand_handler(idx):
+                                """Return a handler that records component `idx`'s expand/collapse state."""
                                 def handler(e):
                                     parts_data[idx]["_expanded"] = e.value
 
@@ -538,12 +632,15 @@ def create_question_page():
                                     ).classes("w-full").props("rows=3")
 
             def add_part():
-                # Collapse every existing component and open only the new
-                # one, so the list stays scannable instead of growing into
-                # a wall of open editors. Always defaults to "Text" -- the
-                # most common component, so adding one is never a blank
-                # menu to puzzle over; switch its type afterwards if you
-                # meant to add a Table/Material/Image instead.
+                """Append a new, expanded "Text" component and collapse the rest.
+
+                Collapses every existing component and opens only the new
+                one, so the list stays scannable instead of growing into a
+                wall of open editors. Always defaults to "Text" -- the
+                most common component, so adding one is never a blank
+                menu to puzzle over; switch its type afterwards if you
+                meant to add a Table/Material/Image instead.
+                """
                 for p in parts_data:
                     p["_expanded"] = False
                 parts_data.append({
@@ -585,6 +682,17 @@ def create_question_page():
         # idiom export_exam.py uses for its Generate button).
         # ------------------------------------------------------------
         def compute_errors():
+            """Collect every reason this question is not yet ready to save.
+
+            Checks title/module/answer requirements, and -- if there are
+            components -- each component's own completeness rules (marks,
+            standard answer, table columns/rows, material text, image
+            upload), otherwise the plain marks/answer fields.
+
+            Returns:
+                A list of user-facing error message strings; empty if the
+                question is valid and ready to save.
+            """
             errors = []
             if not (title_input.value or "").strip():
                 errors.append("Question title is required")
@@ -637,6 +745,13 @@ def create_question_page():
             return errors
 
         def refresh_validation():
+            """Re-run validation and update the inline errors, Save button, and tooltip.
+
+            Called after essentially every field edit so the page's error
+            state stays live: updates the title/answer inline error
+            labels, then enables or disables the Save button and shows or
+            hides its explanatory tooltip based on compute_errors().
+            """
             title_ok = bool((title_input.value or "").strip())
             title_error_label.text = "" if title_ok else "Title is required"
 
@@ -661,6 +776,8 @@ def create_question_page():
                 else:
                     save_tooltip.set_visibility(False)
 
+        # Thin wrappers so each field's on_value_change simply re-runs
+        # validation.
         def on_title_change(e):
             refresh_validation()
 
@@ -684,6 +801,16 @@ def create_question_page():
         with ui.row().classes("gap-4 mt-2 items-center"):
 
             async def on_preview():
+                """Compile the question as it currently stands into a preview PDF.
+
+                Builds the LaTeX source and component payload from the
+                current form state (using placeholder text for any
+                still-empty fields), compiles it with pdflatex, and
+                triggers a browser download of the resulting PDF. Shows a
+                warning/error notification instead if the title is empty,
+                a table component's data is malformed, or the LaTeX
+                compile itself fails.
+                """
                 title = (title_input.value or "").strip()
                 if not title:
                     ui.notify("Please fill in the title before previewing.", color="warning")
@@ -750,8 +877,16 @@ def create_question_page():
             preview_btn = ui.button("Preview PDF", on_click=on_preview, color="secondary").props("outline")
 
             def save_question():
-                """Save the new question."""
+                """Validate the form and persist the new question to the database.
 
+                Re-validates the title/answer/component requirements
+                (defensively, in addition to the Save button's disabled
+                state), builds the component payload, then calls
+                database.add_question and, if there are components,
+                replace_question_parts, before navigating back to the
+                question list. Shows a notification and returns early on
+                the first validation failure encountered.
+                """
                 title = title_input.value.strip()
                 module = (module_input.value or "").strip().upper()
                 topic = (topic_input.value or "").strip()

@@ -1,3 +1,11 @@
+"""NiceGUI page listing the current teacher's own questions.
+
+Shows a filterable/sortable table of the signed-in user's questions,
+with a module sidebar, per-row View/Edit/Delete actions, and buttons for
+creating a new question, exporting an exam paper, and (for admins)
+managing users.
+"""
+
 from collections import Counter
 
 from nicegui import ui, app
@@ -5,6 +13,12 @@ from database import load_questions, delete_question, get_teacher_modules, get_u
 
 
 def question_list_page():
+    """Render the question list page.
+
+    Redirects to the login page if the user isn't signed in. Only shows
+    questions created by the current user, numbered per-user (1, 2, 3...)
+    independently of the underlying database id.
+    """
 
     # Check login
     if not app.storage.user.get("logged_in"):
@@ -50,6 +64,7 @@ def question_list_page():
             )
 
         def logout():
+            """Clear the session and return the user to the login page."""
             app.storage.user.clear()
             ui.navigate.to("/login")
 
@@ -140,6 +155,12 @@ def question_list_page():
         sidebar_items = {}  # module code (or None for "All") -> ui.item element
 
         def set_active(selected_code):
+            """Highlight the selected module in the sidebar list.
+
+            Args:
+                selected_code: The module code that should appear active,
+                    or None for the "All Questions" item.
+            """
             for code, item in sidebar_items.items():
                 if code == selected_code:
                     item.classes(add="bg-primary text-white", remove="text-grey-9")
@@ -147,6 +168,12 @@ def question_list_page():
                     item.classes(remove="bg-primary text-white", add="text-grey-9")
 
         def select_module(code):
+            """Filter the table to a module and mark it active in the sidebar.
+
+            Args:
+                code: The module code to filter to, or None to show every
+                    question ("All Questions").
+            """
             set_active(code)
             if code is None:
                 table.rows = list(all_rows)
@@ -211,20 +238,44 @@ def question_list_page():
         </q-td>
     """)
 
-    # Double click a row to open the detail page
     def open_question(e):
+        """Navigate to a question's detail page on row double-click.
+
+        Args:
+            e: The NiceGUI table event; `e.args["id"]` is the row's
+                question id.
+        """
         ui.navigate.to(f'/questions/{e.args["id"]}')
 
     table.on("rowDblClick", open_question)
 
     # Dropdown menu actions
     def view_question(e):
+        """Navigate to a question's detail page (View menu action).
+
+        Args:
+            e: The NiceGUI menu event; `e.args["id"]` is the row's
+                question id.
+        """
         ui.navigate.to(f'/questions/{e.args["id"]}')
 
     def edit_question(e):
+        """Navigate to a question's edit page (Edit menu action).
+
+        Args:
+            e: The NiceGUI menu event; `e.args["id"]` is the row's
+                question id.
+        """
         ui.navigate.to(f'/questions/{e.args["id"]}/edit')
 
     def delete_question_prompt(e):
+        """Show a confirmation dialog before deleting a question.
+
+        Args:
+            e: The NiceGUI menu event; `e.args["id"]` is the row's
+                question id and `e.args["display_id"]` is its per-user
+                display number shown in the confirmation text.
+        """
         qid = e.args["id"]
         display_id = e.args["display_id"]
 
@@ -236,6 +287,7 @@ def question_list_page():
                 ui.button("Cancel", on_click=dialog.close)
 
                 def confirm():
+                    """Delete the question and close the confirmation dialog."""
                     delete_question(qid)
                     dialog.close()
                     ui.navigate.to("/questions")

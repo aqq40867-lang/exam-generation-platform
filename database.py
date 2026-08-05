@@ -49,10 +49,16 @@ SessionLocal = sessionmaker(bind=engine)
 
 
 def get_session():
-    """Open a new ORM session. Callers are responsible for closing it
-    (mirrors the old sqlite get_connection()/conn.close() pattern used
-    throughout this file -- every function below opens one session, does
-    its work, and closes it, rather than sharing a long-lived session)."""
+    """Opens a new SQLAlchemy ORM session.
+
+    Mirrors the old sqlite get_connection()/conn.close() pattern used
+    throughout this file: every function below opens one session, does
+    its work, and closes it, rather than sharing a long-lived session.
+    Callers are responsible for closing the returned session.
+
+    Returns:
+        A new SQLAlchemy Session bound to the module's engine.
+    """
     return SessionLocal()
 
 
@@ -156,11 +162,20 @@ def init_db():
 
 
 def _normalize_module(module) -> Optional[str]:
-    """Normalize a course module code to a single consistent case (upper)
-    and strip surrounding whitespace, so the same module always compares
-    and displays equal regardless of who typed it or when (e.g. "25cop923"
-    vs "25COP923" are the same module). Returns None for blank/missing
-    input. Used by every code path that writes a Module value."""
+    """Normalizes a course module code to a single consistent case.
+
+    Uppercases the value and strips surrounding whitespace, so the same
+    module always compares and displays equal regardless of who typed it
+    or when (e.g. "25cop923" vs "25COP923" are the same module). Used by
+    every code path that writes a Module value.
+
+    Args:
+        module: The raw module code, or None/blank.
+
+    Returns:
+        The normalized (uppercase, trimmed) module code, or None if
+        `module` is missing or blank.
+    """
     if module is None:
         return None
     module = str(module).strip().upper()
@@ -172,11 +187,19 @@ def _normalize_module(module) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def _hash_password(password: str, salt: Optional[str] = None) -> Tuple[str, str]:
-    """Return (password_hash_hex, salt_hex) using PBKDF2-HMAC-SHA256.
+    """Hashes a password with PBKDF2-HMAC-SHA256.
 
     A fresh random salt is generated when one isn't supplied (i.e. when
     creating a new user). The same salt must be passed back in to verify
     a password later.
+
+    Args:
+        password: The plaintext password to hash.
+        salt: Hex-encoded salt to reuse (e.g. when verifying an existing
+            user's password). A new random salt is generated if omitted.
+
+    Returns:
+        A (password_hash_hex, salt_hex) tuple.
     """
     if salt is None:
         salt = secrets.token_hex(16)
@@ -192,13 +215,24 @@ def _hash_password(password: str, salt: Optional[str] = None) -> Tuple[str, str]
 
 
 def create_user(username: str, password: str, role: str = "teacher", protected: bool = False) -> Optional[int]:
-    """Create a new user with a hashed password. Returns new id, or None if
-    the username is already taken.
+    """Creates a new user in the `users` table with a hashed password.
 
     `protected=True` marks this as a top-level admin account: its role can
     never be changed and the account can never be deleted through the app
     (see `update_user_role` / `delete_user`), guaranteeing there's always at
-    least one admin who can manage everyone else's role."""
+    least one admin who can manage everyone else's role.
+
+    Args:
+        username: The new account's unique username.
+        password: The new account's plaintext password (hashed before
+            storage).
+        role: The account's role, e.g. "teacher" or "admin".
+        protected: Whether this account's role/existence should be locked
+            (see `update_user_role` / `delete_user`).
+
+    Returns:
+        The new user's id, or None if `username` is already taken.
+    """
     session = get_session()
 
     password_hash, salt = _hash_password(password)
@@ -226,7 +260,14 @@ def create_user(username: str, password: str, role: str = "teacher", protected: 
 
 
 def get_user_by_username(username: str):
-    """Return a single user as a dict, or None if it doesn't exist."""
+    """Fetches a single user from the `users` table by username.
+
+    Args:
+        username: The username to look up.
+
+    Returns:
+        The user as a dict, or None if it doesn't exist.
+    """
     session = get_session()
     try:
         user = session.query(User).filter(User.username == username).first()
@@ -236,10 +277,16 @@ def get_user_by_username(username: str):
 
 
 def authenticate_user(username: str, password: str):
-    """Check username/password against the DB.
+    """Checks a username/password combination against the `users` table.
 
-    Returns the user dict (password fields excluded) on success, else None.
-    Also updates "Last login at" on success.
+    Updates "Last login at" on success.
+
+    Args:
+        username: The username to authenticate.
+        password: The plaintext password to verify.
+
+    Returns:
+        The user dict (password fields excluded) on success, else None.
     """
     user = get_user_by_username(username)
     if not user:
@@ -268,7 +315,15 @@ def authenticate_user(username: str, password: str):
 
 
 def update_user_password(username: str, new_password: str) -> bool:
-    """Reset a user's password. Returns True if a row was updated."""
+    """Resets a user's password in the `users` table.
+
+    Args:
+        username: The username whose password should be reset.
+        new_password: The new plaintext password (hashed before storage).
+
+    Returns:
+        True if a row was updated, False if no such user exists.
+    """
     session = get_session()
     try:
         user = session.query(User).filter(User.username == username).first()
@@ -284,7 +339,7 @@ def update_user_password(username: str, new_password: str) -> bool:
 
 
 def update_user_role(username: str, new_role: str, actor_username: Optional[str] = None) -> bool:
-    """Change a user's role. Returns True if a row was updated.
+    """Changes a user's role in the `users` table.
 
     Refuses (returns False, no-op) if the account is protected -- a
     protected account's role is permanently locked as whatever it was
@@ -302,6 +357,16 @@ def update_user_role(username: str, new_role: str, actor_username: Optional[str]
     cached role stale until they happened to log out and back in (see the
     matching "re-verify from DB" notes in admin_users.py / question_list.py
     for the other half of that problem).
+
+    Args:
+        username: The username whose role should change.
+        new_role: The role to assign, e.g. "teacher" or "admin".
+        actor_username: The username of whoever is performing the change.
+            If it equals `username`, the change is refused.
+
+    Returns:
+        True if a row was updated, False if no such user exists, the
+        account is protected, or the actor is changing their own role.
     """
     if actor_username is not None and actor_username == username:
         return False
@@ -323,9 +388,17 @@ def update_user_role(username: str, new_role: str, actor_username: Optional[str]
 
 
 def delete_user(username: str) -> bool:
-    """Delete a user by username. Returns True if a row was deleted.
+    """Deletes a user from the `users` table by username.
 
-    Refuses (returns False, no-op) if the account is protected."""
+    Refuses (returns False, no-op) if the account is protected.
+
+    Args:
+        username: The username to delete.
+
+    Returns:
+        True if a row was deleted, False if no such user exists or the
+        account is protected.
+    """
     session = get_session()
     try:
         user = (
@@ -343,8 +416,16 @@ def delete_user(username: str) -> bool:
 
 
 def is_protected_user(username: str) -> bool:
-    """Return True if this account's role/existence is locked (see
-    `update_user_role` / `delete_user`)."""
+    """Checks whether a user account is protected.
+
+    Args:
+        username: The username to check.
+
+    Returns:
+        True if the account's role/existence is locked (see
+        `update_user_role` / `delete_user`), False otherwise (including
+        if the user doesn't exist).
+    """
     session = get_session()
     try:
         user = session.query(User).filter(User.username == username).first()
@@ -354,11 +435,16 @@ def is_protected_user(username: str) -> bool:
 
 
 def list_users():
-    """Return all users (without password hash/salt) as a list of dicts.
+    """Lists all users in the `users` table, without password hash/salt.
 
     Protected accounts (the top-level admin) are sorted first, so they
     always show up at the top of the User Management list regardless of
-    when they were created; everyone else follows in creation order."""
+    when they were created; everyone else follows in creation order.
+
+    Returns:
+        A list of user dicts, each with "Password hash" and "Salt"
+        omitted.
+    """
     session = get_session()
     try:
         rows = (
@@ -384,7 +470,11 @@ def list_users():
 # 一道题创建一次，可以被反复复用到不同的考试里，跟"考试"没有直接关系。
 
 def load_questions():
-    """Return all questions as a list of dicts."""
+    """Lists every row in the `questions` table.
+
+    Returns:
+        A list of question dicts.
+    """
     session = get_session()
     try:
         return [_row_to_dict(q) for q in session.query(Question).all()]
@@ -393,7 +483,14 @@ def load_questions():
 
 
 def get_question(question_id: int):
-    """Return a single question as a dict, or None if it doesn't exist."""
+    """Fetches a single question from the `questions` table by id.
+
+    Args:
+        question_id: The question's primary key.
+
+    Returns:
+        The question as a dict, or None if it doesn't exist.
+    """
     session = get_session()
     try:
         q = session.query(Question).filter(Question.id == question_id).first()
@@ -403,7 +500,17 @@ def get_question(question_id: int):
 
 
 def add_question(question: dict) -> int:
-    """Insert a new question and return its new id."""
+    """Inserts a new row into the `questions` table.
+
+    Args:
+        question: A dict of question fields (e.g. "Question",
+            "Main question", "Marks", "Answer", "Status", "Version",
+            "Created by", "Created at", "Usage", "Module", "Topic"),
+            keyed by the same column names used elsewhere in this file.
+
+    Returns:
+        The new question's id.
+    """
     session = get_session()
     try:
         q = Question(
@@ -427,7 +534,16 @@ def add_question(question: dict) -> int:
 
 
 def update_question(question_id: int, updated_question: dict) -> bool:
-    """Update an existing question. Returns True if a row was updated."""
+    """Updates an existing row in the `questions` table.
+
+    Args:
+        question_id: The question's primary key.
+        updated_question: A dict of the new question fields (see
+            `add_question` for the expected keys).
+
+    Returns:
+        True if a row was updated, False if no such question exists.
+    """
     session = get_session()
     try:
         q = session.query(Question).filter(Question.id == question_id).first()
@@ -452,7 +568,14 @@ def update_question(question_id: int, updated_question: dict) -> bool:
 
 
 def delete_question(question_id: int) -> bool:
-    """Delete a question by id. Returns True if a row was deleted."""
+    """Deletes a row from the `questions` table by id.
+
+    Args:
+        question_id: The question's primary key.
+
+    Returns:
+        True if a row was deleted, False if no such question exists.
+    """
     session = get_session()
     try:
         q = session.query(Question).filter(Question.id == question_id).first()
@@ -466,11 +589,14 @@ def delete_question(question_id: int) -> bool:
 
 
 def list_modules():
-    """Return a sorted list of the distinct, non-empty course modules
-    ("Module", e.g. "CO923") already used across all questions.
+    """Lists every distinct course module already used on a question.
 
     Used to populate the module dropdown/combobox on the create/edit forms
     and the filter dropdown on the question list page.
+
+    Returns:
+        A sorted list of distinct, non-empty "Module" values (e.g.
+        "CO923") from the `questions` table.
     """
     session = get_session()
     try:
@@ -492,14 +618,20 @@ def list_modules():
 
 
 def list_topics(username: str):
-    """Return the sorted list of distinct, non-empty "Topic" values already
-    used across this teacher's own questions.
+    """Lists every distinct "Topic" value already used by one teacher.
 
     "Topic" is a free-text field (not a controlled list), so this exists
     purely to power an autocomplete suggestion list on the create/edit
     forms -- it keeps a teacher from typing "Stack" on one question and
     "Stacks" on another purely by accident, without forcing a rigid
     taxonomy on them.
+
+    Args:
+        username: The teacher whose own questions ("Created by") should
+            be scanned for topics.
+
+    Returns:
+        A sorted list of distinct, non-empty "Topic" values.
     """
     session = get_session()
     try:
@@ -529,7 +661,14 @@ def list_topics(username: str):
 # type an arbitrary course code themselves.
 
 def get_teacher_modules(username: str):
-    """Return the sorted list of modules a teacher has been assigned."""
+    """Lists the modules a teacher has been assigned in `teacher_modules`.
+
+    Args:
+        username: The teacher's username.
+
+    Returns:
+        A sorted list of module code strings.
+    """
     session = get_session()
     try:
         rows = (
@@ -544,8 +683,13 @@ def get_teacher_modules(username: str):
 
 
 def set_teacher_modules(username: str, modules: list) -> None:
-    """Replace the full set of modules assigned to a teacher with `modules`
-    (a list of strings). Blank/duplicate entries are ignored."""
+    """Replaces a teacher's assigned modules in `teacher_modules`.
+
+    Args:
+        username: The teacher's username.
+        modules: The full list of module codes the teacher should be
+            assigned. Blank/duplicate entries are ignored.
+    """
     session = get_session()
     try:
         session.query(TeacherModule).filter(TeacherModule.username == username).delete()
@@ -564,9 +708,15 @@ def set_teacher_modules(username: str, modules: list) -> None:
 
 
 def list_all_assignable_modules():
-    """Return a sorted list of every module code known to the system so far
-    (already used on a question, or already assigned to some teacher), to
-    use as suggestions when an admin assigns modules to a teacher."""
+    """Lists every module code known to the system so far.
+
+    Includes modules already used on a question, or already assigned to
+    some teacher, for use as suggestions when an admin assigns modules to
+    a teacher.
+
+    Returns:
+        A sorted list of distinct module code strings.
+    """
     session = get_session()
     try:
         from_questions = (
@@ -592,9 +742,16 @@ def list_all_assignable_modules():
 # sum of all of its parts whenever it has at least one.
 
 def _label_for_index(index: int) -> str:
-    """Return the UK-style lower-case letter label for a 0-based index:
-    0 -> 'a', 1 -> 'b', ..., 25 -> 'z', 26 -> 'aa', etc. (Displayed in the
-    UI wrapped in parentheses, e.g. "(a)".)
+    """Converts a 0-based index into a UK-style lower-case letter label.
+
+    E.g. 0 -> 'a', 1 -> 'b', ..., 25 -> 'z', 26 -> 'aa', etc. Displayed in
+    the UI wrapped in parentheses, e.g. "(a)".
+
+    Args:
+        index: The 0-based position of the sub-question.
+
+    Returns:
+        The letter label for that position.
     """
     letters = string.ascii_lowercase
     label = ""
@@ -606,7 +763,7 @@ def _label_for_index(index: int) -> str:
 
 
 def get_question_parts(question_id: int):
-    """Return all components belonging to a main question, in order.
+    """Lists all sub-questions belonging to a main question, in order.
 
     Each dict includes "Part type" ("text", "table", "material", or
     "image") and, for "table" parts, "Table spec" -- decoded back from
@@ -614,6 +771,12 @@ def get_question_parts(question_id: int):
     docstring for its shape). "Table spec" is None for every other type.
     "material"/"image" parts have "Label" as None (they aren't lettered
     sub-questions) and "Marks" forced to 0.
+
+    Args:
+        question_id: The parent question's primary key.
+
+    Returns:
+        A list of question-part dicts, ordered by "order_index".
     """
     session = get_session()
     try:
@@ -640,8 +803,9 @@ _ALL_PART_TYPES = _GRADABLE_PART_TYPES + _NON_GRADABLE_PART_TYPES
 
 
 def replace_question_parts(question_id: int, parts: list) -> int:
-    """Replace all components belonging to `question_id` with `parts`, in
-    the desired display order.
+    """Replaces all sub-questions belonging to `question_id` with `parts`.
+
+    Applies `parts` in the desired display order.
 
     `parts` is a list of dicts. Every part carries "Part type" -- one of:
 
@@ -691,6 +855,14 @@ def replace_question_parts(question_id: int, parts: list) -> int:
     The parent question's "Marks" column is then set to the sum of the
     (gradable) parts' marks and the new total is returned. If `parts` is
     empty, the parent's "Marks" is left untouched and 0 is returned.
+
+    Args:
+        question_id: The parent question's primary key.
+        parts: The new list of sub-question dicts, in the desired display
+            order (see above for each dict's shape).
+
+    Returns:
+        The parent question's new total marks (0 if `parts` is empty).
     """
     session = get_session()
     try:
@@ -741,10 +913,15 @@ def replace_question_parts(question_id: int, parts: list) -> int:
 
 
 def delete_question_parts(question_id: int) -> None:
-    """Delete all sub-questions for a main question (also happens
-    automatically via ON DELETE CASCADE when the question itself is
-    deleted, but exposed here for explicit use, e.g. converting a
-    multi-part question back into a plain one)."""
+    """Deletes all sub-questions for a main question.
+
+    This also happens automatically via ON DELETE CASCADE when the
+    question itself is deleted, but is exposed here for explicit use,
+    e.g. converting a multi-part question back into a plain one.
+
+    Args:
+        question_id: The parent question's primary key.
+    """
     session = get_session()
     try:
         session.query(QuestionPart).filter(QuestionPart.question_id == question_id).delete()
@@ -760,7 +937,11 @@ def delete_question_parts(question_id: int) -> None:
 # 名字、说明、总分、状态（草稿/发布）、创建人等。它本身不包含具体题目内容，只是一个"壳"。
 
 def load_exams():
-    """Return all exams as a list of dicts."""
+    """Lists every row in the `exams` table.
+
+    Returns:
+        A list of exam dicts.
+    """
     session = get_session()
     try:
         return [_row_to_dict(e) for e in session.query(Exam).all()]
@@ -769,7 +950,14 @@ def load_exams():
 
 
 def get_exam(exam_id: int):
-    """Return a single exam as a dict, or None if it doesn't exist."""
+    """Fetches a single exam from the `exams` table by id.
+
+    Args:
+        exam_id: The exam's primary key.
+
+    Returns:
+        The exam as a dict, or None if it doesn't exist.
+    """
     session = get_session()
     try:
         e = session.query(Exam).filter(Exam.id == exam_id).first()
@@ -779,7 +967,15 @@ def get_exam(exam_id: int):
 
 
 def add_exam(exam: dict) -> int:
-    """Insert a new exam and return its new id."""
+    """Inserts a new row into the `exams` table.
+
+    Args:
+        exam: A dict of exam fields ("Name", "Description",
+            "Total marks", "Status", "Created by", "Created at").
+
+    Returns:
+        The new exam's id.
+    """
     session = get_session()
     try:
         e = Exam(
@@ -798,7 +994,16 @@ def add_exam(exam: dict) -> int:
 
 
 def update_exam(exam_id: int, updated_exam: dict) -> bool:
-    """Update an existing exam. Returns True if a row was updated."""
+    """Updates an existing row in the `exams` table.
+
+    Args:
+        exam_id: The exam's primary key.
+        updated_exam: A dict of the new exam fields (see `add_exam` plus
+            "Updated at").
+
+    Returns:
+        True if a row was updated, False if no such exam exists.
+    """
     session = get_session()
     try:
         e = session.query(Exam).filter(Exam.id == exam_id).first()
@@ -816,8 +1021,16 @@ def update_exam(exam_id: int, updated_exam: dict) -> bool:
 
 
 def delete_exam(exam_id: int) -> bool:
-    """Delete an exam by id (its exam_questions links cascade). Returns
-    True if a row was deleted."""
+    """Deletes a row from the `exams` table by id.
+
+    Its exam_questions links cascade-delete along with it.
+
+    Args:
+        exam_id: The exam's primary key.
+
+    Returns:
+        True if a row was deleted, False if no such exam exists.
+    """
     session = get_session()
     try:
         e = session.query(Exam).filter(Exam.id == exam_id).first()
@@ -840,7 +1053,18 @@ def delete_exam(exam_id: int) -> bool:
 
 def add_question_to_exam(exam_id: int, question_id: int, order: Optional[int] = None,
                           marks_override: Optional[int] = None) -> int:
-    """Attach a question to an exam. Returns the new exam_questions row id."""
+    """Attaches a question to an exam via the `exam_questions` link table.
+
+    Args:
+        exam_id: The exam's primary key.
+        question_id: The question's primary key.
+        order: The question's display position within the exam, if any.
+        marks_override: An exam-specific marks value overriding the
+            question's default "Marks", if any.
+
+    Returns:
+        The new exam_questions row id.
+    """
     session = get_session()
     try:
         eq = ExamQuestion(
@@ -857,7 +1081,15 @@ def add_question_to_exam(exam_id: int, question_id: int, order: Optional[int] = 
 
 
 def remove_question_from_exam(exam_id: int, question_id: int) -> bool:
-    """Detach a question from an exam. Returns True if a row was deleted."""
+    """Detaches a question from an exam in the `exam_questions` table.
+
+    Args:
+        exam_id: The exam's primary key.
+        question_id: The question's primary key.
+
+    Returns:
+        True if a row was deleted, False if no such link exists.
+    """
     session = get_session()
     try:
         deleted = (
@@ -872,8 +1104,15 @@ def remove_question_from_exam(exam_id: int, question_id: int) -> bool:
 
 
 def get_exam_questions(exam_id: int):
-    """Return the full question rows attached to an exam, in order, each
-    annotated with its exam-specific "Marks override" (may be None)."""
+    """Lists the full question rows attached to an exam, in order.
+
+    Args:
+        exam_id: The exam's primary key.
+
+    Returns:
+        A list of question dicts, each annotated with "Order" and
+        "Marks override" (may be None) from the exam_questions link.
+    """
     session = get_session()
     try:
         rows = (

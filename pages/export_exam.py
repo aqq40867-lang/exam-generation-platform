@@ -1,3 +1,10 @@
+"""NiceGUI page for building and exporting an exam paper.
+
+Lets a teacher pick questions from their question bank, assign each one a
+mark value for this exam, and export the result as a compiled PDF (or raw
+LaTeX source) once the selected marks match the exam's full marks total.
+"""
+
 import io
 import zipfile
 from datetime import datetime
@@ -14,9 +21,13 @@ from latex_export import build_latex, compile_latex_to_pdf, LatexCompileError
 
 
 def export_exam_page():
-    """Build a new exam paper by selecting questions from the question
-    bank, giving each one a mark value *for this exam*, and exporting the
-    result as a PDF (rendered from a LaTeX template)."""
+    """Render the exam export page.
+
+    Lets the logged-in teacher select questions from their own question
+    bank, assign each one a mark value for this exam, and export the
+    selection as a PDF (or LaTeX source) once the selected marks add up to
+    the exam's full marks total. Redirects to /login if not authenticated.
+    """
 
     # Check login
     if not app.storage.user.get("logged_in"):
@@ -77,6 +88,7 @@ def export_exam_page():
         download_tex_btn = None
 
         def selected_total() -> int:
+            """Return the sum of marks assigned to the currently selected questions."""
             total = 0
             for qid in selected_ids:
                 widget = row_widgets.get(qid)
@@ -85,11 +97,22 @@ def export_exam_page():
             return total
 
         def disabled_reason(count: int, total: int, target: int) -> str:
-            """Human-readable reason the Generate button is currently
-            disabled, or '' if it isn't. Shown as a tooltip on the button
-            (a disabled button in Quasar has pointer-events disabled, so
-            the tooltip is attached to a wrapper div around it instead --
-            see how generate_btn is created below)."""
+            """Explain why the Generate button is currently disabled.
+
+            Shown as a tooltip on the button (a disabled button in Quasar
+            has pointer-events disabled, so the tooltip is attached to a
+            wrapper div around it instead -- see how generate_btn is
+            created below).
+
+            Args:
+                count: Number of currently selected questions.
+                total: Sum of marks assigned to the selected questions.
+                target: The exam's full marks total to match.
+
+            Returns:
+                A human-readable reason string, or '' if the button should
+                not be disabled.
+            """
             if count == 0:
                 return "Select at least one question first."
             if total < target:
@@ -107,6 +130,13 @@ def export_exam_page():
             return ""
 
         def refresh_status():
+            """Refresh the status label and enable/disable the action buttons.
+
+            Recomputes the selected question count and marks total against
+            the target, updates the status label's text and color, and
+            enables the Generate/Download buttons (and tooltip) only when
+            the selection is valid.
+            """
             total = selected_total()
             target = int(total_marks_input.value or 0)
             count = len(selected_ids)
@@ -147,6 +177,12 @@ def export_exam_page():
             list_container = ui.column().classes("w-full gap-0")
 
             def build_rows():
+                """Render the question checklist.
+
+                Rebuilds one row per question, each with a selection
+                checkbox and a marks input that only becomes editable once
+                the row is selected.
+                """
                 list_container.clear()
                 row_widgets.clear()
                 with list_container:
@@ -170,6 +206,7 @@ def export_exam_page():
                             marks_input.disable()
 
                             def on_toggle(e, qid=qid, marks_input=marks_input):
+                                """Add/remove this question from the selection and toggle its marks input accordingly."""
                                 if e.value:
                                     selected_ids.add(qid)
                                     marks_input.enable()
@@ -191,6 +228,7 @@ def export_exam_page():
             build_rows()
 
             def apply_search():
+                """Show only the rows whose question text or module matches the search term."""
                 term = (search_input.value or "").strip().lower()
                 for q in questions:
                     widget = row_widgets.get(q["id"])
@@ -227,8 +265,14 @@ def export_exam_page():
         refresh_status()
 
         def gather_selected():
-            """Return (name, description, total, questions_with_marks) built
-            from the current selection, in display order."""
+            """Collect the currently selected questions in display order.
+
+            Returns:
+                A tuple ``(name, description, total, questions_with_marks)``
+                built from the current form values and selection, where
+                ``questions_with_marks`` is a list of
+                ``(question, marks, parts)`` tuples.
+            """
             name = (exam_name.value or "New Exam").strip()
             description = (exam_description.value or "").strip()
             total = int(total_marks_input.value or 0)
@@ -245,10 +289,25 @@ def export_exam_page():
             return name, description, total, questions_with_marks
 
         def _safe_filename(name: str) -> str:
+            """Strip a string down to characters safe for use in a filename.
+
+            Args:
+                name: The raw name to sanitize.
+
+            Returns:
+                The sanitized name, or "exam" if nothing safe remains.
+            """
             return "".join(c for c in name if c.isalnum() or c in " _-").strip() or "exam"
 
         def _zip_bytes(files: dict) -> bytes:
-            """files: {filename: bytes/str}. Returns the zip archive's bytes."""
+            """Package files into an in-memory zip archive.
+
+            Args:
+                files: Mapping of filename to file content (str or bytes).
+
+            Returns:
+                The zip archive's raw bytes.
+            """
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
                 for filename, content in files.items():
@@ -256,6 +315,13 @@ def export_exam_page():
             return buf.getvalue()
 
         async def on_download_tex():
+            """Build and download the raw LaTeX source for the current selection.
+
+            Downloads a single .tex file, or a zip bundling the .tex file
+            with any embedded image assets it references. For "example"
+            mode, produces both the example and solutions LaTeX sources
+            zipped together.
+            """
             if not selected_ids:
                 ui.notify("Select at least one question first.", color="warning")
                 return
@@ -285,6 +351,13 @@ def export_exam_page():
                 ui.download(zip_bytes, filename=f"{safe_name}_revision_pack_tex.zip")
 
         async def on_generate():
+            """Compile the current selection to PDF and record the exam.
+
+            Validates the selection totals match the target marks, compiles
+            the LaTeX template(s) to PDF, saves the exam and its questions
+            to the database, then downloads the resulting PDF (or a zip of
+            the example/solutions pair for revision packs).
+            """
             total = selected_total()
             target = int(total_marks_input.value or 0)
             if not selected_ids:

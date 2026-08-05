@@ -1,9 +1,17 @@
+"""NiceGUI page for user login."""
+
 from nicegui import ui, app
 from database import authenticate_user
 
 
 def login_page():
-    """Login page."""
+    """Renders the login form and handles authentication.
+
+    Redirects to the question list immediately if the user is already
+    logged in. Otherwise shows username/password fields and a login
+    button that authenticates against the database, stores the session
+    on success, and navigates to the question list.
+    """
 
     # If already logged in, go directly to question list
     if app.storage.user.get("logged_in"):
@@ -27,6 +35,7 @@ def login_page():
         ).classes("w-full")
 
         def login():
+            """Validates credentials and starts the session on success."""
 
             user = username.value.strip()
             pwd = password.value

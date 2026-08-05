@@ -1,3 +1,9 @@
+"""NiceGUI page for admin-only user account management.
+
+Lets an admin view all accounts, change teacher/admin roles, assign the
+course modules a teacher may author questions for, and delete accounts.
+"""
+
 from nicegui import ui, app
 from database import (
     list_users,
@@ -10,10 +16,21 @@ from database import (
 
 
 def _format_modules_summary(modules: list, limit: int = 4) -> str:
-    """Compact display string for a teacher's module list. Full list is shown
-    up to `limit` entries; beyond that it's truncated with a "+N more" tail
-    (the full list is still available via the row's tooltip) so a teacher
-    with dozens of modules doesn't blow out the table layout."""
+    """Build a compact display string for a teacher's module list.
+
+    The full list is shown up to `limit` entries; beyond that it's
+    truncated with a "+N more" tail (the full list remains available via
+    the row's tooltip), so a teacher with dozens of modules doesn't blow
+    out the table layout.
+
+    Args:
+        modules: The teacher's assigned module codes.
+        limit: Maximum number of modules to show before truncating.
+
+    Returns:
+        "—" if there are no modules, otherwise the comma-joined list
+        (truncated with a "+N more" suffix if it exceeds `limit`).
+    """
     if not modules:
         return "—"
     if len(modules) <= limit:
@@ -22,7 +39,13 @@ def _format_modules_summary(modules: list, limit: int = 4) -> str:
 
 
 def admin_users_page():
-    """User management page. Admins only: change roles and remove accounts."""
+    """Render the admin-only user management page.
+
+    Redirects to /login if not authenticated, and bounces non-admins back
+    to /questions. Re-verifies the caller's role fresh from the database
+    (rather than trusting the session cache) so a revoked admin loses
+    access on their very next page load.
+    """
 
     # Check login
     if not app.storage.user.get("logged_in"):
@@ -72,6 +95,12 @@ def admin_users_page():
         table_container = ui.column().classes("w-full gap-0")
 
         def refresh_table():
+            """Rebuild the accounts table from the current database state.
+
+            Re-fetches all users and re-renders the header plus one row per
+            account, each wired up with its role selector/edit dialogs,
+            module assignment editor, and delete button.
+            """
             table_container.clear()
 
             with table_container:
@@ -133,7 +162,21 @@ def admin_users_page():
                             confirmed_role = {"value": u["Role"]}
 
                             def make_role_change_handler(username, role_select, confirmed_role):
+                                """Build the role-select change handler for one user row.
+
+                                Args:
+                                    username: The account whose role is being changed.
+                                    role_select: The row's role dropdown widget.
+                                    confirmed_role: Mutable ``{"value": ...}`` holder tracking
+                                        the last confirmed role, used to revert the dropdown
+                                        if the change is cancelled.
+
+                                Returns:
+                                    An event handler that prompts for confirmation before
+                                    persisting the new role.
+                                """
                                 def on_role_change():
+                                    """Prompt to confirm the role change, then persist or revert it."""
                                     new_role = role_select.value
                                     old_role = confirmed_role["value"]
 
@@ -201,7 +244,18 @@ def admin_users_page():
                             )
 
                         def make_modules_edit_handler(username, modules_label):
+                            """Build the click handler that opens the module-assignment dialog for one user row.
+
+                            Args:
+                                username: The teacher whose modules are being edited.
+                                modules_label: The row's label widget showing the current
+                                    module summary, updated in place when the dialog is saved.
+
+                            Returns:
+                                A click handler that opens the edit dialog.
+                            """
                             def open_edit_dialog():
+                                """Open a dialog for adding/removing this teacher's course modules."""
                                 # Local, in-memory working copy of this teacher's module
                                 # list for the lifetime of the dialog. Each module is
                                 # added one at a time (its own entity/row, with its own
@@ -228,6 +282,7 @@ def admin_users_page():
                                     )
 
                                     def render_modules_list():
+                                        """Redraw the in-dialog list of currently assigned modules."""
                                         modules_list.clear()
                                         with modules_list:
                                             if not modules_data:
@@ -237,6 +292,7 @@ def admin_users_page():
                                             for i, module in enumerate(modules_data):
 
                                                 def make_remove_handler(idx):
+                                                    """Build a click handler that removes the module at `idx` from the working list."""
                                                     def handler():
                                                         modules_data.pop(idx)
                                                         render_modules_list()
@@ -260,6 +316,7 @@ def admin_users_page():
                                         ).classes("flex-grow")
 
                                         def add_module():
+                                            """Add the typed module code to the working list, if valid and not a duplicate."""
                                             new_module = (new_module_input.value or "").strip().upper()
                                             if not new_module:
                                                 return
@@ -293,6 +350,7 @@ def admin_users_page():
                                         ui.button("Cancel", on_click=dialog.close)
 
                                         def save():
+                                            """Persist the working module list and update the row's summary label."""
                                             set_teacher_modules(username, modules_data)
                                             updated_modules = get_teacher_modules(username)
                                             modules_label.text = _format_modules_summary(updated_modules)
@@ -317,7 +375,17 @@ def admin_users_page():
                         ui.label(u.get("Last login at") or "").classes("flex-1")
 
                         def make_delete_handler(username):
+                            """Build the delete-button click handler for one user row.
+
+                            Args:
+                                username: The account this row's delete button targets.
+
+                            Returns:
+                                A click handler that prompts for confirmation before deleting
+                                the account.
+                            """
                             def delete_prompt():
+                                """Confirm and then delete this account, unless it's the caller's own."""
                                 if username == current_username:
                                     ui.notify(
                                         "You cannot delete your own account while logged in.",
