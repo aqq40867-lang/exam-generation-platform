@@ -69,8 +69,9 @@ def export_exam_page():
         ui.label(
             "Reorder or remove the questions you ticked in the Question "
             "Bank, set the marks each one is worth in this exam, then "
-            "generate a PDF once the marks add up to the full marks "
-            "total. To add more questions, go back to the Question Bank."
+            "generate a PDF. If the marks don't add up to the full marks "
+            "total yet, you'll get a heads-up but can still generate. To "
+            "add more questions, go back to the Question Bank."
         ).classes("text-sm text-grey-600")
 
         if not selected_questions:
@@ -121,18 +122,20 @@ def export_exam_page():
                 total += int(widget.value or 0) if widget is not None else entry["marks"]
             return total
 
-        def disabled_reason(count: int, total: int, target: int) -> str:
+        def disabled_reason(count: int) -> str:
             """Explain why the Generate button is currently disabled.
 
             Shown as a tooltip on the button (a disabled button in Quasar
             has pointer-events disabled, so the tooltip is attached to a
             wrapper div around it instead -- see how generate_btn is
-            created below).
+            created below). The marks total no longer has to match the
+            full marks target to generate -- that mismatch is just
+            surfaced as a warning at click time (see on_generate) -- so
+            the only thing that still disables the button is having no
+            questions at all.
 
             Args:
                 count: Number of questions currently in the exam.
-                total: Sum of marks assigned to those questions.
-                target: The exam's full marks total to match.
 
             Returns:
                 A human-readable reason string, or '' if the button should
@@ -140,44 +143,30 @@ def export_exam_page():
             """
             if count == 0:
                 return "Add at least one question first (from the Question Bank)."
-            if total < target:
-                return (
-                    f"Assigned marks ({total}) are {target - total} short of "
-                    f"the full marks total ({target}). Add more questions "
-                    f"or increase their marks in this exam."
-                )
-            if total > target:
-                return (
-                    f"Assigned marks ({total}) are {total - target} over the "
-                    f"full marks total ({target}). Remove a question or lower "
-                    f"some marks in this exam."
-                )
             return ""
 
         def refresh_status():
             """Refresh the status label and enable/disable the action buttons.
 
-            Recomputes the item count and marks total against the target,
-            updates the status label's text and color, and enables the
-            Generate button only when the selection is valid. Preview and
-            Download LaTeX only require at least one question -- they
-            don't need the marks to add up.
+            Recomputes the item count and marks total against the target
+            and updates the status label's text/color as a visual hint --
+            but none of the buttons require the marks to add up anymore;
+            they're all enabled as soon as there's at least one question.
             """
             total = selected_total()
             target = int(total_marks_input.value or 0)
             count = len(items)
             status_label.text = f"{count} question(s) — {total} / {target} marks"
 
-            ok = count > 0 and total == target
-            if ok:
+            if count > 0 and total == target:
                 status_label.classes(replace="text-lg font-bold text-green-700")
             else:
                 status_label.classes(replace="text-lg font-bold text-red-600")
 
             if generate_btn is not None:
-                generate_btn.enable() if ok else generate_btn.disable()
+                generate_btn.enable() if count > 0 else generate_btn.disable()
             if generate_tooltip is not None:
-                reason = disabled_reason(count, total, target)
+                reason = disabled_reason(count)
                 generate_tooltip.set_text(reason)
                 generate_tooltip.set_visibility(bool(reason))
             if download_tex_btn is not None:
@@ -429,11 +418,14 @@ def export_exam_page():
                 ui.notify("Add at least one question first.", color="warning")
                 return
             if total != target:
+                # Doesn't block generation -- just a heads-up so the
+                # teacher notices before handing the paper out, in case
+                # the mismatch wasn't intentional.
                 ui.notify(
-                    f"Assigned marks ({total}) must equal the full marks total ({target}).",
-                    color="negative",
+                    f"Current marks: {total}",
+                    color="warning",
+                    multi_line=True,
                 )
-                return
 
             name, description, total, questions_with_marks = gather_selected()
             with_answers = include_answers.value
