@@ -14,6 +14,7 @@ from pages.create_question import create_question_page
 from pages.edit_question import edit_question_page
 from pages.admin_users import admin_users_page
 from pages.export_exam import export_exam_page
+from pages.export_preview import export_preview_page
 
 
 @ui.page('/')
@@ -68,8 +69,14 @@ def edit_question(question_id: int):
 
 @ui.page('/exams/export')
 def export_exam():
-    """Renders the exam export page (select questions, generate PDF via LaTeX)."""
+    """Renders the exam export page (reorder/remove picks, generate PDF via LaTeX)."""
     export_exam_page()
+
+
+@ui.page('/exams/preview')
+def export_preview():
+    """Renders the exam preview page (compiled PDF preview of the current draft)."""
+    export_preview_page()
 
 
 @ui.page('/admin/users')

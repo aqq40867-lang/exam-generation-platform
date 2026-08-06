@@ -1,8 +1,12 @@
 """NiceGUI page for building and exporting an exam paper.
 
-Lets a teacher pick questions from their question bank, assign each one a
-mark value for this exam, and export the result as a compiled PDF (or raw
-LaTeX source) once the selected marks match the exam's full marks total.
+Question *selection* happens on the Question Bank page (/questions) --
+a teacher ticks the questions they want there, and that selection (an
+ordered list of question ids) is carried over via ``app.storage.user``.
+This page is where they arrange the resulting exam: reorder or remove
+picks, set each one's marks for this exam, optionally include an answer
+key, preview the compiled layout, and finally generate a PDF (or raw
+LaTeX source) once the marks add up to the exam's full marks total.
 """
 
 import io
@@ -23,10 +27,12 @@ from latex_export import build_latex, compile_latex_to_pdf, LatexCompileError
 def export_exam_page():
     """Render the exam export page.
 
-    Lets the logged-in teacher select questions from their own question
-    bank, assign each one a mark value for this exam, and export the
-    selection as a PDF (or LaTeX source) once the selected marks add up to
-    the exam's full marks total. Redirects to /login if not authenticated.
+    Reads the question selection made on /questions out of
+    ``app.storage.user["exam_selection"]`` (an ordered list of question
+    ids), lets the teacher reorder/remove picks and set marks, then
+    exports the result as a PDF (or LaTeX source) once the marks add up
+    to the exam's full marks total. Redirects to /login if not
+    authenticated.
     """
 
     # Check login
@@ -36,25 +42,48 @@ def export_exam_page():
 
     username = app.storage.user["username"]
 
+    # Only this teacher's own questions are eligible -- matches the
+    # filtering /questions already applies before a question can be
+    # ticked. Numbered the same way as /questions (1, 2, 3... per
+    # teacher) so the id shown here matches what the teacher ticked.
     all_questions = load_questions()
-    questions = [q for q in all_questions if q.get("Created by") == username]
-    questions.sort(key=lambda q: q["id"])
-    for display_id, q in enumerate(questions, start=1):
+    own_questions = [q for q in all_questions if q.get("Created by") == username]
+    own_questions.sort(key=lambda q: q["id"])
+    for display_id, q in enumerate(own_questions, start=1):
         q["display_id"] = display_id
+    by_id = {q["id"]: q for q in own_questions}
+
+    # Resolve the stored selection against this teacher's current
+    # question set, in the order it was ticked (or last dragged into) --
+    # silently dropping any id that's since been deleted. Writing the
+    # cleaned-up list back to storage keeps /questions' checkboxes honest
+    # if a stale id ever sneaks in.
+    selected_order = app.storage.user.get("exam_selection", [])
+    selected_questions = [by_id[qid] for qid in selected_order if qid in by_id]
+    app.storage.user["exam_selection"] = [q["id"] for q in selected_questions]
 
     with ui.column().classes("w-full max-w-5xl mx-auto p-6 gap-4"):
 
         ui.link("← Back to Question Bank", "/questions").classes("text-sm")
         ui.label("Export Exam Paper").classes("text-2xl font-bold")
         ui.label(
-            "Select questions from your question bank, set the marks each "
-            "one is worth in this exam, then generate a PDF once the "
-            "selected marks add up to the full marks total."
+            "Reorder or remove the questions you ticked in the Question "
+            "Bank, set the marks each one is worth in this exam, then "
+            "generate a PDF once the marks add up to the full marks "
+            "total. To add more questions, go back to the Question Bank."
         ).classes("text-sm text-grey-600")
 
-        if not questions:
-            ui.label("You don't have any questions yet. Create some first.").classes("text-grey-600")
-            ui.button("Create New Question", on_click=lambda: ui.navigate.to("/questions/new"))
+        if not selected_questions:
+            ui.label(
+                "No questions selected yet."
+            ).classes("text-grey-600 font-semibold mt-2")
+            ui.label(
+                "Go to the Question Bank, tick the questions you want on "
+                "this exam, then come back here."
+            ).classes("text-sm text-grey-600")
+            ui.button(
+                "Go to Question Bank", on_click=lambda: ui.navigate.to("/questions")
+            )
             return
 
         # -- Exam settings -----------------------------------------------
@@ -66,34 +95,30 @@ def export_exam_page():
                 ).classes("w-56")
             exam_description = ui.input("Description (optional)").classes("w-full")
 
-            ui.label("Export as").classes("font-semibold mt-2")
-            export_mode = ui.radio(
-                {
-                    "official": "Official paper — for printing, in the exam hall "
-                                 "(blank answer space + continuation pages at the end)",
-                    "example": "Example + Answers — for revision, not printed "
-                                "(a practice paper plus a matching answer version, "
-                                "so students can self-mark)",
-                },
-                value="official",
-            ).props("inline")
+            include_answers = ui.checkbox("Include answers")
 
         # -- Selection state -----------------------------------------------
-        selected_ids: set = set()
-        row_widgets = {}  # question_id -> {"marks_input": ..., "row": ..., "checkbox": ...}
+        # One entry per selected question, in display/export order. Kept
+        # as a plain Python list (rather than re-deriving order from the
+        # DOM) so drag-reordering, removal, and marks edits all update a
+        # single source of truth that gather_selected() reads from.
+        items = [
+            {"question": q, "marks": int(q.get("Marks") or 0)}
+            for q in selected_questions
+        ]
 
         status_label = ui.label().classes("text-lg font-bold")
         generate_btn = None  # assigned below, referenced by refresh_status()
         generate_tooltip = None  # assigned below, explains why the button is disabled
         download_tex_btn = None
+        preview_btn = None
 
         def selected_total() -> int:
-            """Return the sum of marks assigned to the currently selected questions."""
+            """Return the sum of marks currently assigned across all items."""
             total = 0
-            for qid in selected_ids:
-                widget = row_widgets.get(qid)
-                if widget:
-                    total += int(widget["marks_input"].value or 0)
+            for entry in items:
+                widget = entry.get("marks_input")
+                total += int(widget.value or 0) if widget is not None else entry["marks"]
             return total
 
         def disabled_reason(count: int, total: int, target: int) -> str:
@@ -105,8 +130,8 @@ def export_exam_page():
             created below).
 
             Args:
-                count: Number of currently selected questions.
-                total: Sum of marks assigned to the selected questions.
+                count: Number of questions currently in the exam.
+                total: Sum of marks assigned to those questions.
                 target: The exam's full marks total to match.
 
             Returns:
@@ -114,16 +139,16 @@ def export_exam_page():
                 not be disabled.
             """
             if count == 0:
-                return "Select at least one question first."
+                return "Add at least one question first (from the Question Bank)."
             if total < target:
                 return (
-                    f"Selected marks ({total}) are {target - total} short of "
-                    f"the full marks total ({target}). Select more questions "
+                    f"Assigned marks ({total}) are {target - total} short of "
+                    f"the full marks total ({target}). Add more questions "
                     f"or increase their marks in this exam."
                 )
             if total > target:
                 return (
-                    f"Selected marks ({total}) are {total - target} over the "
+                    f"Assigned marks ({total}) are {total - target} over the "
                     f"full marks total ({target}). Remove a question or lower "
                     f"some marks in this exam."
                 )
@@ -132,15 +157,16 @@ def export_exam_page():
         def refresh_status():
             """Refresh the status label and enable/disable the action buttons.
 
-            Recomputes the selected question count and marks total against
-            the target, updates the status label's text and color, and
-            enables the Generate/Download buttons (and tooltip) only when
-            the selection is valid.
+            Recomputes the item count and marks total against the target,
+            updates the status label's text and color, and enables the
+            Generate button only when the selection is valid. Preview and
+            Download LaTeX only require at least one question -- they
+            don't need the marks to add up.
             """
             total = selected_total()
             target = int(total_marks_input.value or 0)
-            count = len(selected_ids)
-            status_label.text = f"Selected: {count} question(s) — {total} / {target} marks"
+            count = len(items)
+            status_label.text = f"{count} question(s) — {total} / {target} marks"
 
             ok = count > 0 and total == target
             if ok:
@@ -156,92 +182,102 @@ def export_exam_page():
                 generate_tooltip.set_visibility(bool(reason))
             if download_tex_btn is not None:
                 download_tex_btn.enable() if count > 0 else download_tex_btn.disable()
+            if preview_btn is not None:
+                preview_btn.enable() if count > 0 else preview_btn.disable()
 
         total_marks_input.on_value_change(lambda e: refresh_status())
 
-        # -- Search filter ---------------------------------------------------
-        search_input = ui.input("Search by question text or module").classes("w-full")
-
-        # -- Question checklist -----------------------------------------------
-        with ui.card().classes("w-full p-0"):
+        # -- Reorderable question list -----------------------------------
+        with ui.card().classes("w-full p-3"):
             with ui.row().classes(
-                "w-full items-center font-bold border-b px-3 py-2 bg-grey-100"
+                "w-full items-center font-bold px-2 pb-1 text-sm text-grey-600"
             ):
-                ui.label("").classes("w-10")
+                ui.label("").classes("w-8")  # drag handle column
                 ui.label("ID").classes("w-10")
                 ui.label("Question").classes("flex-grow")
-                ui.label("Module").classes("w-28")
-                ui.label("Default").classes("w-20")
-                ui.label("Marks in exam").classes("w-36")
+                ui.label("Default").classes("w-20 text-right")
+                ui.label("Marks in exam").classes("w-32")
+                ui.label("").classes("w-10")  # remove button column
 
-            list_container = ui.column().classes("w-full gap-0")
+            items_container = ui.column().classes("w-full gap-2")
 
-            def build_rows():
-                """Render the question checklist.
+            def remove_item(entry):
+                """Drop one question from the exam and persist the change.
 
-                Rebuilds one row per question, each with a selection
-                checkbox and a marks input that only becomes editable once
-                the row is selected.
+                Removes the row from the page, updates the in-memory
+                ``items`` list, and writes the trimmed selection back to
+                storage (so /questions' checkboxes reflect the removal
+                too). If that empties the exam, reload the page so the
+                "no questions selected" empty state takes over.
                 """
-                list_container.clear()
-                row_widgets.clear()
-                with list_container:
-                    for q in questions:
-                        qid = q["id"]
-                        default_marks = int(q.get("Marks") or 0)
+                items.remove(entry)
+                entry["row"].delete()
+                app.storage.user["exam_selection"] = [e["question"]["id"] for e in items]
+                if not items:
+                    ui.navigate.to("/exams/export")
+                    return
+                refresh_status()
 
-                        with ui.row().classes(
-                            "w-full items-center border-b px-3 py-2"
-                        ) as row:
-                            checkbox = ui.checkbox().classes("w-10")
-                            ui.label(str(q["display_id"])).classes("w-10")
-                            ui.label(q.get("Question") or "").classes(
-                                "flex-grow truncate"
-                            )
-                            ui.label(q.get("Module") or "—").classes("w-28")
-                            ui.label(str(default_marks)).classes("w-20")
-                            marks_input = ui.number(
-                                value=default_marks, min=0
-                            ).classes("w-36")
-                            marks_input.disable()
+            def build_row(entry):
+                """Render one draggable row for a selected question.
 
-                            def on_toggle(e, qid=qid, marks_input=marks_input):
-                                """Add/remove this question from the selection and toggle its marks input accordingly."""
-                                if e.value:
-                                    selected_ids.add(qid)
-                                    marks_input.enable()
-                                else:
-                                    selected_ids.discard(qid)
-                                    marks_input.disable()
-                                refresh_status()
+                Args:
+                    entry: One of the dicts in ``items`` -- holds the
+                        question dict and its current marks value; this
+                        function attaches the row's marks-input widget
+                        and root element back onto it.
+                """
+                q = entry["question"]
+                default_marks = int(q.get("Marks") or 0)
+                with ui.row().classes(
+                    "w-full items-center gap-3 bg-grey-2 rounded-borders px-3 py-2"
+                ) as row:
+                    ui.icon("drag_indicator").classes(
+                        "drag-handle cursor-move text-grey-600 w-8"
+                    )
+                    ui.label(f"#{q['display_id']}").classes("w-10 text-grey-700")
+                    with ui.column().classes("flex-grow gap-0 min-w-0"):
+                        ui.label(q.get("Question") or "").classes("truncate font-medium")
+                        ui.label(q.get("Module") or "—").classes("text-xs text-grey-500")
+                    ui.label(str(default_marks)).classes("w-20 text-right text-grey-500")
 
-                            checkbox.on_value_change(on_toggle)
-                            marks_input.on_value_change(lambda e: refresh_status())
+                    marks_input = ui.number(value=entry["marks"], min=0).classes("w-32")
 
-                            row_widgets[qid] = {
-                                "checkbox": checkbox,
-                                "marks_input": marks_input,
-                                "row": row,
-                                "question": q,
-                            }
+                    def on_marks_change(e, entry=entry):
+                        entry["marks"] = int(e.value or 0)
+                        refresh_status()
 
-            build_rows()
+                    marks_input.on_value_change(on_marks_change)
+                    entry["marks_input"] = marks_input
 
-            def apply_search():
-                """Show only the rows whose question text or module matches the search term."""
-                term = (search_input.value or "").strip().lower()
-                for q in questions:
-                    widget = row_widgets.get(q["id"])
-                    if not widget:
-                        continue
-                    haystack = f"{q.get('Question') or ''} {q.get('Module') or ''}".lower()
-                    widget["row"].set_visibility(term in haystack)
+                    ui.button(
+                        icon="close",
+                        on_click=lambda entry=entry: remove_item(entry),
+                    ).props("flat round dense color=red").classes("w-10")
+                entry["row"] = row
 
-            search_input.on_value_change(lambda e: apply_search())
+            with items_container:
+                for entry in items:
+                    build_row(entry)
+
+            def on_reorder(e):
+                """Keep ``items`` (and storage) in sync after a drag-reorder.
+
+                The Sortable controller already moves the dragged row's
+                element in the DOM/element tree by itself -- this just
+                mirrors that same move in the plain-Python ``items`` list
+                so gather_selected() and everything reading ``items``
+                still matches what's on screen.
+                """
+                entry = items.pop(e.old_index)
+                items.insert(e.new_index, entry)
+                app.storage.user["exam_selection"] = [en["question"]["id"] for en in items]
+
+            items_container.make_sortable(handle=".drag-handle", on_end=on_reorder)
 
         refresh_status()
 
-        # -- Generate ------------------------------------------------------
+        # -- Actions ---------------------------------------------------
         with ui.row().classes("w-full items-center gap-4 mt-2"):
             # The button itself is wrapped in a plain div. A disabled Quasar
             # button has pointer-events disabled, so it never sees mouse
@@ -256,8 +292,10 @@ def export_exam_page():
                 .style("font-size: 14px")
             )
             download_tex_btn = ui.button("Download LaTeX Source (.tex)", color="secondary")
+            preview_btn = ui.button("Preview", color="secondary").props("outline")
             generate_btn.disable()
             download_tex_btn.disable()
+            preview_btn.disable()
 
         # Populate the tooltip's initial text/visibility now that
         # generate_tooltip exists (the first refresh_status() call above
@@ -265,11 +303,11 @@ def export_exam_page():
         refresh_status()
 
         def gather_selected():
-            """Collect the currently selected questions in display order.
+            """Collect the exam's current questions in their display order.
 
             Returns:
                 A tuple ``(name, description, total, questions_with_marks)``
-                built from the current form values and selection, where
+                built from the current form values and ``items``, where
                 ``questions_with_marks`` is a list of
                 ``(question, marks, parts)`` tuples.
             """
@@ -278,11 +316,10 @@ def export_exam_page():
             total = int(total_marks_input.value or 0)
 
             questions_with_marks = []
-            for q in questions:
-                if q["id"] not in selected_ids:
-                    continue
-                widget = row_widgets[q["id"]]
-                marks = int(widget["marks_input"].value or 0)
+            for entry in items:
+                q = entry["question"]
+                widget = entry.get("marks_input")
+                marks = int(widget.value or 0) if widget is not None else entry["marks"]
                 parts = get_question_parts(q["id"])
                 questions_with_marks.append((q, marks, parts))
 
@@ -314,22 +351,50 @@ def export_exam_page():
                     zf.writestr(filename, content)
             return buf.getvalue()
 
-        async def on_download_tex():
-            """Build and download the raw LaTeX source for the current selection.
+        def on_preview():
+            """Snapshot the current draft and open the exam preview page.
 
-            Downloads a single .tex file, or a zip bundling the .tex file
-            with any embedded image assets it references. For "example"
-            mode, produces both the example and solutions LaTeX sources
-            zipped together.
+            Preview doesn't require the marks to add up to the full marks
+            total (unlike Generate) -- it's meant to be usable at any
+            point while still assembling the exam. The draft is written
+            to storage (rather than passed in a URL) since it includes
+            per-question marks overrides and isn't yet a saved exam.
             """
-            if not selected_ids:
-                ui.notify("Select at least one question first.", color="warning")
+            if not items:
+                ui.notify("Add at least one question first.", color="warning")
+                return
+            name, description, total, questions_with_marks = gather_selected()
+            app.storage.user["exam_draft"] = {
+                "name": name,
+                "description": description,
+                "total_marks": total,
+                "include_answers": include_answers.value,
+                "items": [
+                    {"question_id": q["id"], "marks": marks}
+                    for q, marks, _parts in questions_with_marks
+                ],
+            }
+            ui.navigate.to("/exams/preview")
+
+        async def on_download_tex():
+            """Build and download the raw LaTeX source for the current exam.
+
+            Always builds the "official" exam paper (blank answer space,
+            tick lines, continuation pages at the end). If "Include
+            answers" is checked, also builds a matching "solutions"
+            source and bundles both (plus any embedded image assets) into
+            a single zip; otherwise downloads just the one .tex file (or
+            a zip, if it has embedded images).
+            """
+            if not items:
+                ui.notify("Add at least one question first.", color="warning")
                 return
             name, description, total, questions_with_marks = gather_selected()
             safe_name = _safe_filename(name)
 
-            if export_mode.value == "official":
-                tex_source, assets = build_latex(name, description, total, questions_with_marks, mode="official")
+            tex_source, assets = build_latex(name, description, total, questions_with_marks, mode="official")
+
+            if not include_answers.value:
                 # Bundle any embedded images alongside the .tex source so
                 # someone compiling this elsewhere (e.g. Overleaf) has
                 # everything \includegraphics references, not just the
@@ -340,57 +405,48 @@ def export_exam_page():
                 else:
                     ui.download(tex_source.encode("utf-8"), filename=f"{safe_name}.tex")
             else:
-                example_tex, example_assets = build_latex(name, description, total, questions_with_marks, mode="example")
                 solutions_tex, solutions_assets = build_latex(name, description, total, questions_with_marks, mode="solutions")
                 zip_bytes = _zip_bytes({
-                    f"{safe_name}_example.tex": example_tex,
-                    f"{safe_name}_solutions.tex": solutions_tex,
-                    **example_assets,
+                    f"{safe_name}.tex": tex_source,
+                    f"{safe_name}_answers.tex": solutions_tex,
+                    **assets,
                     **solutions_assets,
                 })
-                ui.download(zip_bytes, filename=f"{safe_name}_revision_pack_tex.zip")
+                ui.download(zip_bytes, filename=f"{safe_name}_tex.zip")
 
         async def on_generate():
-            """Compile the current selection to PDF and record the exam.
+            """Compile the current exam to PDF and record it.
 
-            Validates the selection totals match the target marks, compiles
-            the LaTeX template(s) to PDF, saves the exam and its questions
-            to the database, then downloads the resulting PDF (or a zip of
-            the example/solutions pair for revision packs).
+            Validates the marks add up to the target, compiles the exam
+            paper (and, if "Include answers" is checked, a matching
+            solutions PDF), saves the exam and its questions to the
+            database, then downloads the result -- a single PDF, or a zip
+            of the paper + answer key.
             """
             total = selected_total()
             target = int(total_marks_input.value or 0)
-            if not selected_ids:
-                ui.notify("Select at least one question first.", color="warning")
+            if not items:
+                ui.notify("Add at least one question first.", color="warning")
                 return
             if total != target:
                 ui.notify(
-                    f"Selected marks ({total}) must equal the full marks total ({target}).",
+                    f"Assigned marks ({total}) must equal the full marks total ({target}).",
                     color="negative",
                 )
                 return
 
             name, description, total, questions_with_marks = gather_selected()
-            mode = export_mode.value
+            with_answers = include_answers.value
             safe_name = _safe_filename(name)
 
             generate_btn.disable()
             generate_btn.props("loading")
             try:
                 try:
-                    if mode == "official":
-                        tex_source, assets = build_latex(name, description, total, questions_with_marks, mode="official")
-                        pdf_bytes = await run.io_bound(compile_latex_to_pdf, tex_source, 60, assets)
-                    else:
-                        # "Example + Answers": two separate documents -- a
-                        # practice paper (blank answer space, no answers)
-                        # and a matching solutions version (shaded answer
-                        # boxes inline) -- zipped together into one download
-                        # so a student gets both with a single click but can
-                        # look at the example before checking the solutions.
-                        example_tex, example_assets = build_latex(name, description, total, questions_with_marks, mode="example")
+                    tex_source, assets = build_latex(name, description, total, questions_with_marks, mode="official")
+                    pdf_bytes = await run.io_bound(compile_latex_to_pdf, tex_source, 60, assets)
+                    if with_answers:
                         solutions_tex, solutions_assets = build_latex(name, description, total, questions_with_marks, mode="solutions")
-                        example_pdf = await run.io_bound(compile_latex_to_pdf, example_tex, 60, example_assets)
                         solutions_pdf = await run.io_bound(compile_latex_to_pdf, solutions_tex, 60, solutions_assets)
                 except LatexCompileError as exc:
                     ui.notify(str(exc), color="negative", multi_line=True, close_button=True)
@@ -402,26 +458,34 @@ def export_exam_page():
                     "Name": name,
                     "Description": description,
                     "Total marks": target,
-                    "Status": "Exported" if mode == "official" else "Revision Pack",
+                    "Status": "Exported (with answers)" if with_answers else "Exported",
                     "Created by": username,
                     "Created at": now,
                 })
                 for order, (q, marks, _parts) in enumerate(questions_with_marks):
                     add_question_to_exam(exam_id, q["id"], order=order, marks_override=marks)
 
-                if mode == "official":
+                # The exam's been recorded -- clear the working selection
+                # and any preview draft so the next visit to the Question
+                # Bank / Export page starts from a blank slate instead of
+                # showing this now-generated exam's picks still ticked.
+                app.storage.user["exam_selection"] = []
+                app.storage.user.pop("exam_draft", None)
+
+                if not with_answers:
                     ui.download(pdf_bytes, filename=f"{safe_name}.pdf")
                     ui.notify("Exam paper generated.", color="positive")
                 else:
                     zip_bytes = _zip_bytes({
-                        f"{safe_name}_example.pdf": example_pdf,
-                        f"{safe_name}_solutions.pdf": solutions_pdf,
+                        f"{safe_name}.pdf": pdf_bytes,
+                        f"{safe_name}_answers.pdf": solutions_pdf,
                     })
-                    ui.download(zip_bytes, filename=f"{safe_name}_revision_pack.zip")
-                    ui.notify("Example + Answers pack generated.", color="positive")
+                    ui.download(zip_bytes, filename=f"{safe_name}_with_answers.zip")
+                    ui.notify("Exam paper with answers generated.", color="positive")
             finally:
                 generate_btn.props(remove="loading")
                 refresh_status()
 
         generate_btn.on_click(on_generate)
         download_tex_btn.on_click(on_download_tex)
+        preview_btn.on_click(on_preview)

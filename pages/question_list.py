@@ -140,12 +140,41 @@ def question_list_page():
     table = ui.table(
         columns=columns,
         rows=list(all_rows),
-        row_key="id"
+        row_key="id",
+        selection="multiple",
     ).classes("w-full")
 
     # table-layout: fixed makes every column actually honour the equal
     # "width" percentages set above, instead of auto-sizing to content.
     table.props('table-style="table-layout: fixed; width: 100%"')
+
+    # -- Exam question selection ------------------------------------------
+    # A teacher builds an exam by ticking questions here (checkbox column,
+    # added automatically by selection="multiple"), then clicking "Export
+    # Exam Paper" to hand the selection off to /exams/export, which lets
+    # them reorder/remove/mark up the picks and generate the PDF. The
+    # selection itself lives in app.storage.user (keyed "exam_selection",
+    # an ordered list of question ids) so it survives navigating away from
+    # this page -- e.g. opening a question's detail view mid-pick -- and
+    # persists until the teacher clears it or generates an exam.
+    selected_ids = set(app.storage.user.get("exam_selection", []))
+    table.selected = [r for r in all_rows if r["id"] in selected_ids]
+
+    def on_select(e):
+        """Persist the current tick-box selection, preserving pick order.
+
+        Keeps whatever relative order previously-selected ids already had
+        in storage, and appends newly-ticked ids at the end -- so the
+        export page's initial question order matches the order they were
+        ticked in, before any manual drag-reordering there.
+        """
+        current_ids = {row["id"] for row in e.selection}
+        previous_order = app.storage.user.get("exam_selection", [])
+        new_order = [qid for qid in previous_order if qid in current_ids]
+        new_order += [qid for qid in current_ids if qid not in previous_order]
+        app.storage.user["exam_selection"] = new_order
+
+    table.on_select(on_select)
 
     with ui.left_drawer(value=True, bordered=True).classes("bg-grey-1"):
         ui.label("MODULES").classes(
