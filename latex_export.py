@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import unicodedata
 
 
 class LatexCompileError(RuntimeError):
@@ -45,6 +46,149 @@ _LATEX_SPECIAL_CHARS = {
     ">": r"\textgreater{}",
 }
 
+# Unicode symbols that question/answer/table text commonly contains (e.g.
+# "MST <- {}" traces, set notation, comparisons) but that plain pdflatex
+# with `inputenc[utf8]` cannot typeset directly -- pdflatex only knows the
+# handful of accented Latin characters inputenc declares, so anything else
+# (mathematical symbols, smart punctuation, Greek letters, ...) needs to be
+# swapped for an equivalent LaTeX command instead. Each replacement that
+# needs math mode is wrapped in its own `$...$` so it works whether it's
+# embedded in running text or inside a table cell. `amssymb` (already
+# loaded in _HEADER) covers all the math commands used below.
+_UNICODE_SYMBOLS = {
+    "∅": r"$\emptyset$",
+    "≤": r"$\leq$",
+    "≥": r"$\geq$",
+    "≠": r"$\neq$",
+    "≈": r"$\approx$",
+    "→": r"$\rightarrow$",
+    "←": r"$\leftarrow$",
+    "↔": r"$\leftrightarrow$",
+    "⇒": r"$\Rightarrow$",
+    "∞": r"$\infty$",
+    "±": r"$\pm$",
+    "×": r"$\times$",
+    "÷": r"$\div$",
+    "°": r"$^{\circ}$",
+    "∈": r"$\in$",
+    "∉": r"$\notin$",
+    "⊆": r"$\subseteq$",
+    "⊂": r"$\subset$",
+    "∪": r"$\cup$",
+    "∩": r"$\cap$",
+    "∀": r"$\forall$",
+    "∃": r"$\exists$",
+    "∑": r"$\sum$",
+    "∏": r"$\prod$",
+    "√": r"$\sqrt{}$",
+    "∂": r"$\partial$",
+    "∇": r"$\nabla$",
+    "⌈": r"$\lceil$",
+    "⌉": r"$\rceil$",
+    "⌊": r"$\lfloor$",
+    "⌋": r"$\rfloor$",
+    "∴": r"$\therefore$",
+    "∵": r"$\because$",
+    "⊥": r"$\bot$",
+    "∧": r"$\wedge$",
+    "∨": r"$\vee$",
+    "¬": r"$\neg$",
+    "⇔": r"$\Leftrightarrow$",
+    "↦": r"$\mapsto$",
+    "∘": r"$\circ$",
+    "⌀": r"$\emptyset$",
+    "∖": r"$\setminus$",
+    "⊇": r"$\supseteq$",
+    "⊃": r"$\supset$",
+    "≡": r"$\equiv$",
+    "≪": r"$\ll$",
+    "≫": r"$\gg$",
+    "−": "-",
+    "⋅": r"$\cdot$",
+    "·": r"$\cdot$",
+    "′": r"$'$",
+    "″": r"$''$",
+    "ℓ": r"$\ell$",
+    "ℝ": r"$\mathbb{R}$",
+    "ℕ": r"$\mathbb{N}$",
+    "ℤ": r"$\mathbb{Z}$",
+    "ℚ": r"$\mathbb{Q}$",
+    "ℂ": r"$\mathbb{C}$",
+    "Δ": r"$\Delta$",
+    "α": r"$\alpha$",
+    "β": r"$\beta$",
+    "γ": r"$\gamma$",
+    "δ": r"$\delta$",
+    "ε": r"$\varepsilon$",
+    "θ": r"$\theta$",
+    "κ": r"$\kappa$",
+    "λ": r"$\lambda$",
+    "μ": r"$\mu$",
+    "ν": r"$\nu$",
+    "π": r"$\pi$",
+    "ρ": r"$\rho$",
+    "σ": r"$\sigma$",
+    "τ": r"$\tau$",
+    "φ": r"$\varphi$",
+    "χ": r"$\chi$",
+    "ψ": r"$\psi$",
+    "ω": r"$\omega$",
+    "Γ": r"$\Gamma$",
+    "Θ": r"$\Theta$",
+    "Λ": r"$\Lambda$",
+    "Π": r"$\Pi$",
+    "Σ": r"$\Sigma$",
+    "Φ": r"$\Phi$",
+    "Ψ": r"$\Psi$",
+    "Ω": r"$\Omega$",
+    "•": r"$\bullet$",
+    "‣": r"$\bullet$",
+    "…": r"\ldots{}",
+    "–": "--",
+    "—": "---",
+    "‘": "`",
+    "’": "'",
+    "“": "``",
+    "”": "''",
+}
+
+
+def _fallback_symbol(ch: str) -> str:
+    """Best-effort rendering for a character with no explicit mapping.
+
+    Teachers can paste arbitrary Unicode into question/answer/table text,
+    so `_UNICODE_SYMBOLS` above can never be a complete list -- there will
+    always be some symbol (an obscure math operator, an emoji, a currency
+    sign, ...) it hasn't seen yet. Previously that meant pdflatex's
+    "Unicode character ... not set up for use with LaTeX" fatal error,
+    which blocks exporting the *entire* exam over one stray character
+    buried in one question.
+
+    Latin-1 Supplement characters (U+0080-U+00FF: accented Latin letters
+    like e/n/u, plus a handful of symbols such as micro-sign) are passed
+    through untouched -- pdflatex's `inputenc[utf8]` renders those
+    natively without any extra package. Anything above that range and not
+    already in `_UNICODE_SYMBOLS` is replaced with a bracketed,
+    human-readable placeholder built from the character's Unicode name
+    (e.g. "[RIGHT DOUBLE QUOTATION MARK]"), so the document still
+    compiles and the placeholder makes it obvious in the printed output
+    that a character needs fixing at the source.
+
+    Args:
+        ch: A single character with `ord(ch) > 127`.
+
+    Returns:
+        Either `ch` itself (Latin-1 Supplement) or an escaped bracketed
+        placeholder describing it.
+    """
+    if 0x80 <= ord(ch) <= 0xFF:
+        return ch
+    try:
+        name = unicodedata.name(ch)
+    except ValueError:
+        name = f"U+{ord(ch):04X}"
+    return "".join(_LATEX_SPECIAL_CHARS.get(c, c) for c in f"[{name}]")
+
 
 def escape_latex(text) -> str:
     """Escape a plain string so it's safe to drop into LaTeX source.
@@ -55,12 +199,27 @@ def escape_latex(text) -> str:
 
     Returns:
         The input with LaTeX special characters (backslash, &, %, $, #,
-        _, {, }, ~, ^, <, >) replaced by their escaped equivalents.
+        _, {, }, ~, ^, <, >) replaced by their escaped equivalents,
+        common Unicode math/typography symbols (empty set, comparisons,
+        arrows, Greek letters, smart quotes, ...) replaced by LaTeX
+        commands, and any other non-Latin-1 character replaced by a
+        readable placeholder -- see `_fallback_symbol` -- so a single
+        unanticipated character can never fail the whole PDF compile.
     """
     if text is None:
         return ""
     text = str(text)
-    return "".join(_LATEX_SPECIAL_CHARS.get(ch, ch) for ch in text)
+    out = []
+    for ch in text:
+        if ch in _LATEX_SPECIAL_CHARS:
+            out.append(_LATEX_SPECIAL_CHARS[ch])
+        elif ch in _UNICODE_SYMBOLS:
+            out.append(_UNICODE_SYMBOLS[ch])
+        elif ord(ch) > 127:
+            out.append(_fallback_symbol(ch))
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def _paragraphs(text: str) -> str:
@@ -68,6 +227,15 @@ def _paragraphs(text: str) -> str:
 
     Each block of text is escaped first; single newlines within a block
     become LaTeX line breaks rather than starting a new paragraph.
+
+    Note the `\\{}` (not just `\\`): a bare `\\` line-break command takes
+    an optional `[<length>]` argument for extra vertical space, so if the
+    very next character happens to be a literal "[" -- e.g. a line
+    starting "[Given the graph below]...", or a bulleted line whose "*"
+    was rendered as the "[BULLET]" fallback placeholder -- LaTeX tries to
+    parse "Given the graph below]" (or "BULLET]") as a length and dies
+    with "Missing number, treated as zero." The empty group after `\\`
+    blocks that lookup, so a following "[" is always read as plain text.
 
     Args:
         text: Plain text, with paragraphs separated by a blank line.
@@ -79,7 +247,7 @@ def _paragraphs(text: str) -> str:
     blocks = [block.strip() for block in escaped.split("\n\n") if block.strip()]
     if not blocks:
         return ""
-    return "\n\n".join(block.replace("\n", r" \\ ") for block in blocks)
+    return "\n\n".join(block.replace("\n", r" \\{} ") for block in blocks)
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +577,10 @@ def _render_question(
 
     lines = []
     lines.append(
-        r"\noindent\textbf{Question %d} \hfill \textbf{[%d marks]}\\"
+        # Guarded with \\{} (see _paragraphs docstring above) since the
+        # very next line is the question's own text, which is arbitrary
+        # user content and could start with a literal "[".
+        r"\noindent\textbf{Question %d} \hfill \textbf{[%d marks]}\\{}"
         % (number, marks)
     )
     lines.append(_paragraphs(question.get("Question", "")))

@@ -81,55 +81,34 @@ def _labels_for(parts_data: list) -> list:
     return labels
 
 
-def _parse_table_spec(given_text: str, answer_text: str, rows_text: str) -> dict:
-    """Parse a "table"-type component's plain-text fields into structured form.
+def _table_spec(part: dict) -> dict:
+    """Build the {"given_columns", "answer_columns", "rows"} shape for a table component.
 
-    Converts the three plain-text fields behind a "table"-type component
-    into the {"given_columns", "answer_columns", "rows"} shape that
-    database.py's replace_question_parts / latex_export.py's table
-    renderer expect.
-
-    Columns are typed as a single "|"-separated line each (e.g.
-    "Step | Edge | Weight"); rows are one per line, also "|"-separated, in
-    "given columns first, then answer columns" order. This is
-    intentionally the only structural check performed; empty
-    tables/columns are allowed here and are instead flagged as a
-    *validation* error (not a parse error) so the Save button's tooltip
-    can explain what's still missing.
+    A "table"-type component keeps its data directly in this shape in
+    parts_data already -- "table_given_columns" / "table_answer_columns"
+    (each a list of column-name strings) and "table_rows" (a list of
+    rows, each a list of cell strings ordered given-columns-first then
+    answer-columns-first) -- built up by the grid editor's add/remove
+    column/row handlers, which maintain the invariant that every row's
+    length always equals len(given_columns) + len(answer_columns). So,
+    unlike the old plain-text fields this replaced, there's no parsing
+    (or parse errors) here -- this just reads the three lists back out
+    with sensible defaults for a component that's never been switched to
+    "table" type yet.
 
     Args:
-        given_text: Raw "|"-separated line of given (visible) column
-            names.
-        answer_text: Raw "|"-separated line of answer (blank-to-fill)
-            column names.
-        rows_text: Raw row data, one "|"-separated row per line, given
-            columns first then answer columns.
+        part: The raw in-memory state dict for one component.
 
     Returns:
-        A dict with "given_columns", "answer_columns", and "rows" keys.
-
-    Raises:
-        ValueError: If a row doesn't have exactly as many values as there
-            are declared columns. The message is user-facing and safe to
-            show directly via ui.notify.
+        A dict with "given_columns", "answer_columns", and "rows" keys,
+        matching what database.py's replace_question_parts / latex_export.py's
+        table renderer expect as a "Table spec".
     """
-    given_cols = [c.strip() for c in (given_text or "").split("|") if c.strip()]
-    answer_cols = [c.strip() for c in (answer_text or "").split("|") if c.strip()]
-    n = len(given_cols) + len(answer_cols)
-
-    rows = []
-    for line_no, line in enumerate((rows_text or "").splitlines(), start=1):
-        if not line.strip():
-            continue
-        cells = [c.strip() for c in line.split("|")]
-        if n and len(cells) != n:
-            raise ValueError(
-                f"Row {line_no} of the table has {len(cells)} value(s), expected {n} "
-                f"({len(given_cols)} given column(s) + {len(answer_cols)} answer column(s))"
-            )
-        rows.append(cells)
-
-    return {"given_columns": given_cols, "answer_columns": answer_cols, "rows": rows}
+    return {
+        "given_columns": list(part.get("table_given_columns") or []),
+        "answer_columns": list(part.get("table_answer_columns") or []),
+        "rows": [list(r) for r in (part.get("table_rows") or [])],
+    }
 
 
 def _build_part_dict(label, part: dict, *, for_preview: bool) -> dict:
@@ -152,12 +131,6 @@ def _build_part_dict(label, part: dict, *, for_preview: bool) -> dict:
         replace_question_parts() ("Label", "Description", "Marks",
         "Answer space", "Part type", "Table spec", "Answer", "Image data",
         "Image filename").
-
-    Raises:
-        ValueError: If it's a "table" component whose row data doesn't
-            line up with its declared columns. The message is
-            user-facing and safe to show directly via ui.notify. Nothing
-            else can fail here.
     """
     part_type = part.get("part_type", "text")
     description = (part.get("description") or "").strip()
@@ -177,11 +150,7 @@ def _build_part_dict(label, part: dict, *, for_preview: bool) -> dict:
     if part_type == "table":
         result["Description"] = description or ("(no description yet)" if for_preview else None)
         result["Marks"] = int(part.get("marks") or 0)
-        result["Table spec"] = _parse_table_spec(
-            part.get("table_given_cols_text", ""),
-            part.get("table_answer_cols_text", ""),
-            part.get("table_rows_text", ""),
-        )
+        result["Table spec"] = _table_spec(part)
     elif part_type == "material":
         result["Description"] = description or ("(no material text yet)" if for_preview else None)
     elif part_type == "image":
@@ -231,7 +200,11 @@ def create_question_page():
     #   marks: number (ignored for material/image -- always saved as 0)
     #   answer: str (only used by "text")
     #   answer_space: "half"|"full" (only used by "text")
-    #   table_given_cols_text / table_answer_cols_text / table_rows_text: str
+    #   table_given_columns / table_answer_columns: list[str] (column names)
+    #   table_rows: list[list[str]] (each row's cells, given columns first
+    #     then answer columns, always kept the same length as
+    #     len(table_given_columns) + len(table_answer_columns) by the grid
+    #     editor's add/remove column/row handlers)
     #   image_data: base64 str or None, image_filename: str or None
     #   _expanded: bool -- whether this component's editor is open or
     #     collapsed to a one-line summary; stripped out before saving.
@@ -407,15 +380,129 @@ def create_question_page():
                             """
                             def handler(e):
                                 parts_data[idx]["part_type"] = e.value
+                                # First time this component becomes a
+                                # table, seed one given column, one answer
+                                # column, and one row -- an empty grid
+                                # with nothing but "+" buttons is a
+                                # confusing blank slate; a single starter
+                                # row/column pair is easy to rename or
+                                # delete, and shows what the grid does.
+                                if (
+                                    e.value == "table"
+                                    and not parts_data[idx].get("table_given_columns")
+                                    and not parts_data[idx].get("table_answer_columns")
+                                ):
+                                    parts_data[idx]["table_given_columns"] = ["Given 1"]
+                                    parts_data[idx]["table_answer_columns"] = ["Answer 1"]
+                                    parts_data[idx]["table_rows"] = [["", ""]]
                                 render_parts()
                                 recalc_total()
 
                             return handler
 
-                        def make_table_field_handler(idx, field):
-                            """Return a handler that updates one raw text field of component `idx`'s table spec."""
+                        def make_table_rename_col_handler(idx, group, col_i):
+                            """Return a handler that renames given/answer column `col_i` of component `idx`.
+
+                            Just updates the name in place -- doesn't touch
+                            row data, so it only needs a validation
+                            refresh, not a full re-render (typing in the
+                            name field would otherwise lose focus on every
+                            keystroke).
+                            """
+                            key = "table_given_columns" if group == "given" else "table_answer_columns"
+
                             def handler(e):
-                                parts_data[idx][field] = e.value
+                                parts_data[idx][key][col_i] = e.value
+                                refresh_validation()
+
+                            return handler
+
+                        def make_table_cell_handler(idx, row_i, col_i):
+                            """Return a handler that updates one row/column cell of component `idx`'s table.
+
+                            Same reasoning as make_table_rename_col_handler:
+                            no re-render needed for a plain value edit.
+                            """
+                            def handler(e):
+                                parts_data[idx]["table_rows"][row_i][col_i] = e.value
+                                refresh_validation()
+
+                            return handler
+
+                        def make_table_add_col_handler(idx, group):
+                            """Return a handler that appends a new given/answer column to component `idx`'s table.
+
+                            Every row keeps given-columns-first-then-answer-
+                            columns order, so a new given column's cell is
+                            inserted right at the given/answer boundary in
+                            every existing row (pushing answer cells along),
+                            while a new answer column's cell is simply
+                            appended at the end of every row.
+                            """
+                            def handler():
+                                p = parts_data[idx]
+                                given = p.setdefault("table_given_columns", [])
+                                answer = p.setdefault("table_answer_columns", [])
+                                rows = p.setdefault("table_rows", [])
+                                if group == "given":
+                                    boundary = len(given)
+                                    given.append("")
+                                    for row in rows:
+                                        row.insert(boundary, "")
+                                else:
+                                    answer.append("")
+                                    for row in rows:
+                                        row.append("")
+                                render_parts()
+                                refresh_validation()
+
+                            return handler
+
+                        def make_table_remove_col_handler(idx, group, col_i):
+                            """Return a handler that deletes given/answer column `col_i` from component `idx`'s table.
+
+                            Removes the column's own name entry and, from
+                            every row, the one cell at that column's
+                            position -- keeping every row's length in sync
+                            with the new column count.
+                            """
+                            def handler():
+                                p = parts_data[idx]
+                                given = p.get("table_given_columns", [])
+                                answer = p.get("table_answer_columns", [])
+                                rows = p.get("table_rows", [])
+                                real_i = col_i if group == "given" else len(given) + col_i
+                                if group == "given":
+                                    if col_i < len(given):
+                                        given.pop(col_i)
+                                elif col_i < len(answer):
+                                    answer.pop(col_i)
+                                for row in rows:
+                                    if real_i < len(row):
+                                        row.pop(real_i)
+                                render_parts()
+                                refresh_validation()
+
+                            return handler
+
+                        def make_table_add_row_handler(idx):
+                            """Return a handler that appends a new, blank row to component `idx`'s table."""
+                            def handler():
+                                p = parts_data[idx]
+                                total = len(p.get("table_given_columns", [])) + len(p.get("table_answer_columns", []))
+                                p.setdefault("table_rows", []).append([""] * total)
+                                render_parts()
+                                refresh_validation()
+
+                            return handler
+
+                        def make_table_remove_row_handler(idx, row_i):
+                            """Return a handler that deletes row `row_i` from component `idx`'s table."""
+                            def handler():
+                                rows = parts_data[idx].get("table_rows", [])
+                                if row_i < len(rows):
+                                    rows.pop(row_i)
+                                render_parts()
                                 refresh_validation()
 
                             return handler
@@ -451,18 +538,10 @@ def create_question_page():
                         part_type = part.get("part_type", "text")
 
                         if part_type == "table":
-                            try:
-                                _spec = _parse_table_spec(
-                                    part.get("table_given_cols_text", ""),
-                                    part.get("table_answer_cols_text", ""),
-                                    part.get("table_rows_text", ""),
-                                )
-                                complete = bool(_spec["answer_columns"]) and bool(_spec["rows"])
-                                ncols = len(_spec["given_columns"]) + len(_spec["answer_columns"])
-                                nrows = len(_spec["rows"])
-                            except ValueError:
-                                complete = False
-                                ncols = nrows = 0
+                            _spec = _table_spec(part)
+                            complete = bool(_spec["answer_columns"]) and bool(_spec["rows"])
+                            ncols = len(_spec["given_columns"]) + len(_spec["answer_columns"])
+                            nrows = len(_spec["rows"])
                             header = f"({label})  Table · {nrows} row(s), {ncols} column(s)  ·  {part.get('marks') or 0} marks"
                             if not complete or (part.get("marks") or 0) <= 0:
                                 header += "  ⚠ Incomplete"
@@ -536,37 +615,91 @@ def create_question_page():
                                     ).classes("w-full").props("rows=2")
 
                                     ui.label(
-                                        "Table question: fill in three things -- given columns "
-                                        "(information the student can see), answer columns "
-                                        "(blanks the student fills in), and each row's data. The "
-                                        "answer columns are left blank on the practice paper and "
-                                        "filled in on the answer paper."
+                                        "Name each column and mark it Given (grey -- information "
+                                        "the student can see) or Answer (blue -- left blank on the "
+                                        "practice paper, filled in on the answer paper), then fill "
+                                        "in each row below."
                                     ).classes("text-xs text-grey-600")
 
-                                    ui.label('Given columns (separate with "|", e.g. Step | Edge | Weight)').classes(
-                                        "text-xs font-semibold mt-1"
-                                    )
-                                    ui.input(
-                                        value=part.get("table_given_cols_text", ""),
-                                        on_change=make_table_field_handler(i, "table_given_cols_text"),
-                                    ).classes("w-full")
+                                    given_cols = part.get("table_given_columns") or []
+                                    answer_cols = part.get("table_answer_columns") or []
+                                    table_rows = part.get("table_rows") or []
+                                    total_cols = len(given_cols) + len(answer_cols)
+                                    _GIVEN_BG = "#f3f4f6"
+                                    _ANSWER_BG = "#dbeafe"
 
-                                    ui.label(
-                                        'Answer columns (separate with "|", e.g. Taken? | Current MST edges)'
-                                    ).classes("text-xs font-semibold mt-1")
-                                    ui.input(
-                                        value=part.get("table_answer_cols_text", ""),
-                                        on_change=make_table_field_handler(i, "table_answer_cols_text"),
-                                    ).classes("w-full")
+                                    if total_cols:
+                                        grid_style = (
+                                            f"display:grid; grid-template-columns: "
+                                            f"repeat({total_cols}, minmax(90px, 1fr)) 40px; "
+                                            "gap:6px; align-items:center;"
+                                        )
+                                        with ui.element("div").style(grid_style).classes("w-full mt-1"):
+                                            for gi, name in enumerate(given_cols):
+                                                with ui.row().classes("items-center gap-0 no-wrap"):
+                                                    ui.input(
+                                                        value=name,
+                                                        placeholder=f"Given {gi + 1}",
+                                                        on_change=make_table_rename_col_handler(i, "given", gi),
+                                                    ).props("dense outlined").style(
+                                                        f"background:{_GIVEN_BG}"
+                                                    ).classes("w-full")
+                                                    ui.button(
+                                                        icon="close",
+                                                        color="red",
+                                                        on_click=make_table_remove_col_handler(i, "given", gi),
+                                                    ).props("flat dense round size=sm")
+                                            for ai, name in enumerate(answer_cols):
+                                                with ui.row().classes("items-center gap-0 no-wrap"):
+                                                    ui.input(
+                                                        value=name,
+                                                        placeholder=f"Answer {ai + 1}",
+                                                        on_change=make_table_rename_col_handler(i, "answer", ai),
+                                                    ).props("dense outlined").style(
+                                                        f"background:{_ANSWER_BG}"
+                                                    ).classes("w-full")
+                                                    ui.button(
+                                                        icon="close",
+                                                        color="red",
+                                                        on_click=make_table_remove_col_handler(i, "answer", ai),
+                                                    ).props("flat dense round size=sm")
+                                            ui.label("")  # spacer above the row-delete button column
 
-                                    ui.label(
-                                        'Row data (one row per line, given columns first then answer '
-                                        'columns, separated with "|", e.g.: 1 | P-R | 3 | Yes | P-R)'
-                                    ).classes("text-xs font-semibold mt-1")
-                                    ui.textarea(
-                                        value=part.get("table_rows_text", ""),
-                                        on_change=make_table_field_handler(i, "table_rows_text"),
-                                    ).classes("w-full").props("rows=5")
+                                            for ri, row in enumerate(table_rows):
+                                                for ci in range(total_cols):
+                                                    is_given = ci < len(given_cols)
+                                                    ui.input(
+                                                        value=row[ci] if ci < len(row) else "",
+                                                        on_change=make_table_cell_handler(i, ri, ci),
+                                                    ).props("dense outlined").style(
+                                                        f"background:{_GIVEN_BG if is_given else _ANSWER_BG}"
+                                                    ).classes("w-full")
+                                                ui.button(
+                                                    icon="delete",
+                                                    color="red",
+                                                    on_click=make_table_remove_row_handler(i, ri),
+                                                ).props("flat dense round size=sm")
+                                    else:
+                                        ui.label(
+                                            "No columns yet -- add a given or answer column below to start."
+                                        ).classes("text-xs text-grey-500 italic mt-1")
+
+                                    with ui.row().classes("gap-2 mt-2"):
+                                        ui.button(
+                                            "+ Given column",
+                                            icon="add",
+                                            on_click=make_table_add_col_handler(i, "given"),
+                                        ).props("outline dense size=sm")
+                                        ui.button(
+                                            "+ Answer column",
+                                            icon="add",
+                                            on_click=make_table_add_col_handler(i, "answer"),
+                                        ).props("outline dense size=sm")
+                                        ui.button(
+                                            "+ Row",
+                                            icon="add",
+                                            on_click=make_table_add_row_handler(i),
+                                        ).props("outline dense size=sm")
 
                                 elif part_type == "material":
                                     ui.label(
@@ -649,9 +782,9 @@ def create_question_page():
                     "marks": 0,
                     "answer": "",
                     "answer_space": "half",
-                    "table_given_cols_text": "",
-                    "table_answer_cols_text": "",
-                    "table_rows_text": "",
+                    "table_given_columns": [],
+                    "table_answer_columns": [],
+                    "table_rows": [],
                     "image_data": None,
                     "image_filename": None,
                     "_expanded": True,
@@ -715,18 +848,11 @@ def create_question_page():
                         has_gradable = True
                         if not (p.get("marks") or 0) > 0:
                             errors.append(f"Sub-question ({lbl}) must have marks greater than 0")
-                        try:
-                            spec = _parse_table_spec(
-                                p.get("table_given_cols_text", ""),
-                                p.get("table_answer_cols_text", ""),
-                                p.get("table_rows_text", ""),
-                            )
-                            if not spec["answer_columns"]:
-                                errors.append(f"Sub-question ({lbl})'s table needs at least one answer column")
-                            if not spec["rows"]:
-                                errors.append(f"Sub-question ({lbl})'s table needs at least one row of data")
-                        except ValueError as exc:
-                            errors.append(f"Sub-question ({lbl}): {exc}")
+                        spec = _table_spec(p)
+                        if not spec["answer_columns"]:
+                            errors.append(f"Sub-question ({lbl})'s table needs at least one answer column")
+                        if not spec["rows"]:
+                            errors.append(f"Sub-question ({lbl})'s table needs at least one row of data")
                     elif part_type == "material":
                         if not (p.get("description") or "").strip():
                             errors.append("A material component is empty -- add its text or remove it")
