@@ -7,15 +7,15 @@ from database import authenticate_user
 def login_page():
     """Renders the login form and handles authentication.
 
-    Redirects to the question list immediately if the user is already
-    logged in. Otherwise shows username/password fields and a login
-    button that authenticates against the database, stores the session
-    on success, and navigates to the question list.
+    Redirects to the module selection page immediately if the user is
+    already logged in. Otherwise shows username/password fields and a
+    login button that authenticates against the database, stores the
+    session on success, and navigates to the module selection page.
     """
 
-    # If already logged in, go directly to question list
+    # If already logged in, go directly to module selection
     if app.storage.user.get("logged_in"):
-        ui.navigate.to("/questions")
+        ui.navigate.to("/modules")
         return
 
     with ui.column().classes("w-96 mx-auto mt-20 items-center"):
@@ -53,7 +53,7 @@ def login_page():
                     color="positive"
                 )
 
-                ui.navigate.to("/questions")
+                ui.navigate.to("/modules")
 
             else:
 

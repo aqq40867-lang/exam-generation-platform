@@ -1,10 +1,20 @@
 """NiceGUI page for editing an existing exam question.
 
-Renders the "Edit Question" form for questions made up of plain "text"
-sub-questions only (or none at all). Questions containing newer component
-types (table/material/image, see create_question.py) are shown a
-read-only notice instead of the edit form, since this page's save logic
-would otherwise silently discard that component data.
+Renders the "Edit Question" form for a question, pre-filled from its
+existing data. Reuses create_question.py's shared render_question_editor()
+-- the same (a)/(b)/(c)... sub-problem editor (with attached images/
+tables and nested (i)/(ii)/(iii)... sub-parts) that "Create New Question"
+uses -- so this page can now fully round-trip everything that page can
+produce, instead of blocking editing whenever a question contained one of
+those richer shapes.
+
+Only the handful of legacy, non-gradable component types ("material"/
+"image" standalone parts -- see models.py's QuestionPart.part_type) that
+predate create_question.py's current sub-problem model are still shown a
+read-only notice instead of the edit form: they're unlettered stimulus
+content interspersed between lettered sub-problems, a shape the (a)/(b)/
+(c)... editor has no way to represent, so editing here would silently
+drop them.
 """
 
 from nicegui import ui, app
@@ -15,39 +25,135 @@ from database import (
     get_question_parts,
     replace_question_parts,
     get_teacher_modules,
-    list_topics,
+    list_teacher_topics,
+    add_teacher_topic,
 )
+from pages.create_question import render_question_editor
 from datetime import datetime
-import string
 
 
-def _label_for_index(index: int) -> str:
-    """Convert a zero-based position into a UK-style lower-case label.
+def _hydrate_block(block: dict) -> dict:
+    """Convert one stored content block into the editor's live block shape.
+
+    get_question_parts() returns each "table" block with its problem/
+    answer tables nested under "table_spec"/"answer_table_spec" (see
+    models.py's QuestionPart.content_blocks); create_question.py's
+    _render_block_editor instead expects a table block with those two
+    tables' columns/rows flattened directly onto the block dict
+    ("given_columns", "answer_columns", "rows", "answer_rows") so its
+    handlers can mutate them in place. "text" and "image" blocks already
+    match shape as-is.
 
     Args:
-        index: Zero-based position of the sub-question (0, 1, 2, ...).
+        block: One block dict as returned in a part's "Content blocks"
+            list.
 
     Returns:
-        The corresponding label: 0 -> "a", 1 -> "b", ..., 25 -> "z",
-        26 -> "aa", and so on.
+        The equivalent block dict in the shape create_question.py's
+        block editor expects.
     """
-    letters = string.ascii_lowercase
-    label = ""
-    index += 1
-    while index > 0:
-        index, remainder = divmod(index - 1, 26)
-        label = letters[remainder] + label
-    return label
+    btype = block.get("type")
+
+    if btype == "table":
+        spec = block.get("table_spec") or {}
+        answer_spec = block.get("answer_table_spec") or {}
+        return {
+            "type": "table",
+            "given_columns": list(spec.get("given_columns") or []),
+            "answer_columns": list(spec.get("answer_columns") or []),
+            "rows": [list(r) for r in (spec.get("rows") or [])],
+            "answer_rows": [list(r) for r in (answer_spec.get("rows") or [])],
+            "answer_text_before": block.get("answer_text_before") or "",
+            "answer_text_after": block.get("answer_text_after") or "",
+        }
+
+    if btype == "image":
+        return {
+            "type": "image",
+            "image_data": block.get("image_data"),
+            "image_filename": block.get("image_filename"),
+        }
+
+    # "text" (and defensively, anything unrecognised -- treated as an
+    # empty text block rather than crashing the page).
+    return {"type": "text", "text": block.get("text") or ""}
+
+
+def _hydrate_blocks(content_blocks) -> list:
+    """Convert a stored "Content blocks" list into the editor's live shape.
+
+    Always returns at least one block -- a single empty text block if
+    `content_blocks` is empty -- matching create_question.py's own
+    convention that a sub-problem/sub-part never starts with a
+    completely empty block list.
+
+    Args:
+        content_blocks: The raw "Content blocks" list from
+            get_question_parts() (possibly empty/None).
+
+    Returns:
+        A list of block dicts in the editor's live shape.
+    """
+    blocks = [_hydrate_block(b) for b in (content_blocks or [])]
+    return blocks or [{"type": "text", "text": ""}]
+
+
+def _hydrate_sub_part(sub_part: dict) -> dict:
+    """Convert one stored sub-part (the (i)/(ii)/(iii)... level) into the editor's live shape.
+
+    Args:
+        sub_part: One entry from a part's "Sub parts" list (see
+            models.py's QuestionPart.sub_parts for the shape -- the same
+            dict shape create_question.py's _build_part_dict() produces
+            for any part, minus its own further "Sub parts").
+
+    Returns:
+        A dict with "marks", "answer", "answer_space", and "blocks",
+        matching a sub-part entry in parts_data[i]["subparts"].
+    """
+    answer_space = sub_part.get("Answer space")
+    return {
+        "marks": int(sub_part.get("Marks") or 0),
+        "answer": sub_part.get("Answer") or "",
+        "answer_space": answer_space if answer_space in ("half", "full") else "half",
+        "blocks": _hydrate_blocks(sub_part.get("Content blocks")),
+    }
+
+
+def _hydrate_part(part: dict) -> dict:
+    """Convert one get_question_parts() row into a parts_data entry.
+
+    Args:
+        part: One dict from get_question_parts(question_id) -- a
+            lettered (a)/(b)/(c)... sub-problem, with "Content blocks"
+            and "Sub parts" already decoded from JSON.
+
+    Returns:
+        A dict with "marks", "answer", "answer_space", "_expanded",
+        "blocks", and "subparts", matching render_question_editor()'s
+        expected parts_data entry shape.
+    """
+    answer_space = part.get("Answer space")
+    return {
+        "marks": int(part.get("Marks") or 0),
+        "answer": part.get("Answer") or "",
+        "answer_space": answer_space if answer_space in ("half", "full") else "half",
+        "_expanded": False,
+        "blocks": _hydrate_blocks(part.get("Content blocks")),
+        "subparts": [_hydrate_sub_part(sp) for sp in (part.get("Sub parts") or [])],
+    }
 
 
 def edit_question_page(question_id: int):
     """Render the edit form for an existing question, or a block-edit notice.
 
     Verifies the caller is logged in and is the question's creator, then
-    either renders the edit form for plain "text"-only questions or, if
-    the question contains any newer component type (table/material/
-    image), renders a read-only explanation instead of the form so that
-    saving can't silently discard that component's data.
+    either renders the shared sub-problem editor (see
+    create_question.render_question_editor), pre-filled from the
+    question's existing data, or -- only if the question contains a
+    legacy non-gradable "material"/"image" standalone part, a shape the
+    editor has no way to represent -- a read-only explanation instead, so
+    saving can't silently discard that content.
 
     Args:
         question_id: Database id of the question to edit.
@@ -85,19 +191,18 @@ def edit_question_page(question_id: int):
 
     existing_parts = get_question_parts(question_id)
 
-    # This form only understands plain "text" sub-questions -- it predates
-    # "table"/"material"/"image" components (see create_question.py) and
-    # was never updated to build/display them. If it read a component of
-    # one of those types into the same plain
-    # {description, marks, answer, answer_space} shape used below and the
-    # user hit Save, replace_question_parts() would overwrite the real
-    # question_parts rows with what this form built -- silently discarding
-    # the table's rows / material's text / image's data for good, with no
-    # warning. Rather than risk that, editing is blocked entirely (with an
-    # explanation) whenever any component isn't a plain "text" one.
+    # Every part shape create_question.py's editor can itself produce --
+    # an attached image, a table, multiple/reordered content blocks, and
+    # nested (i)/(ii)/(iii)... sub-parts -- is now fully editable via
+    # render_question_editor() below (see _hydrate_part()/_hydrate_block()
+    # above). Only the legacy, non-gradable "material" (stimulus text)
+    # and "image" (standalone image) part types -- unlettered rows that
+    # can be interspersed between lettered sub-problems -- predate that
+    # model and have no equivalent in it, so editing here would silently
+    # drop them; block editing for those, same as before.
     unsupported_types = sorted({
         (p.get("Part type") or "text") for p in existing_parts
-        if (p.get("Part type") or "text") != "text"
+        if (p.get("Part type") or "text") in ("material", "image")
     })
     if unsupported_types:
         with ui.column().classes("w-full max-w-2xl mx-auto p-8 gap-3"):
@@ -105,10 +210,10 @@ def edit_question_page(question_id: int):
             with ui.card().classes("w-full p-6 bg-orange-50"):
                 ui.label("This question can't be edited here yet.").classes("text-lg font-bold")
                 ui.label(
-                    f"It contains a component type this editor doesn't support yet "
-                    f"({', '.join(unsupported_types)}). Editing it here would silently "
-                    f"discard that component's data on save, so editing has been "
-                    f"disabled for this question instead."
+                    f"It contains something this editor doesn't support yet "
+                    f"({', '.join(unsupported_types)} content). Editing it here "
+                    f"would silently discard that data on save, so editing has "
+                    f"been disabled for this question instead."
                 ).classes("text-sm text-grey-700 mt-1")
             with ui.row().classes("gap-4"):
                 ui.button("Back to List", on_click=lambda: ui.navigate.to("/questions"))
@@ -119,388 +224,72 @@ def edit_question_page(question_id: int):
                 )
         return
 
-    # Load existing sub-questions (if any) into the same in-memory shape
-    # used by the create page: a list of {"description": str, "marks": number,
-    # "answer": str, "answer_space": number}
-    def _normalize_answer_space(value):
-        """Coerce a stored answer-space value to a valid option.
+    parts_data = [_hydrate_part(p) for p in existing_parts]
 
-        Older rows (or legacy data) may not have a valid "half"/"full"
-        value yet; falls back to "half" in that case.
+    assigned_modules = get_teacher_modules(username)
+    existing_topics = list_teacher_topics(username)
 
-        Args:
-            value: The raw "Answer space" value read from the database.
+    def on_save(payload):
+        """Persist the edited question from the validated form payload.
 
-        Returns:
-            value unchanged if it is "half" or "full", otherwise "half".
+        Builds the updated question row (preserving fields the form
+        doesn't touch -- Status, Created by/at, Usage -- and bumping
+        Version), saves it via database.update_question, then replaces
+        every sub-question row via replace_question_parts (an empty list
+        if the question no longer has any), before notifying the user
+        and navigating back to the question list.
         """
-        return value if value in ("half", "full") else "half"
-
-    parts_data = [
-        {
-            "description": p.get("Description") or "",
-            "marks": p.get("Marks") or 0,
-            "answer": p.get("Answer") or "",
-            "answer_space": _normalize_answer_space(p.get("Answer space")),
+        updated_question = {
+            "Question": payload["title"],
+            "Main question": payload["main_text"] or None,
+            "Marks": payload["marks"],
+            "Answer": payload["answer"] or None,
+            "Status": question.get("Status", "Draft"),
+            "Version": question.get("Version", 1) + 1,
+            "Created by": question.get("Created by", username),
+            "Created at": question.get("Created at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            "Updated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "Usage": question.get("Usage", 0),
+            "Module": payload["module"] or None,
+            "Topic": payload["topic"] or None,
         }
-        for p in existing_parts
-    ]
 
-    with ui.column().classes("w-full max-w-4xl mx-auto p-8"):
+        success = update_question(question_id, updated_question)
 
-        # Header
-        ui.label(f"Edit Question #{display_id}").classes("text-3xl font-bold mb-6")
+        # Sync sub-questions (replaces old ones, re-sums Marks; if the
+        # list is now empty, the manually-entered Marks value above is
+        # kept as-is).
+        replace_question_parts(question_id, payload["parts_payload"] or [])
 
-        # Form
-        with ui.card().classes("w-full p-6"):
+        if payload["topic"]:
+            add_teacher_topic(username, payload["topic"])
 
-            # Question title
-            ui.label("Question Title").classes("font-semibold")
-            title_input = ui.input(
-                value=question.get("Question", ""),
-                placeholder="Enter question title"
-            ).classes("w-full mb-4")
+        if success:
+            ui.notify("Question updated successfully!", color="positive")
+            ui.navigate.to("/questions")
+        else:
+            ui.notify("Failed to update question.", color="negative")
 
-            # Module (course module association, e.g. "CO923"). Restricted to
-            # whatever courses this teacher has been assigned by an admin --
-            # teachers cannot type their own module code here.
-            ui.label("Module").classes("font-semibold")
-            assigned_modules = get_teacher_modules(username)
-            existing_module = question.get("Module") or ""
-            # Keep the question's current module selectable even if it's no
-            # longer (or never was) part of this teacher's assigned list,
-            # so editing the question doesn't silently wipe out its module.
-            module_options = list(assigned_modules)
-            if existing_module and existing_module not in module_options:
-                module_options.append(existing_module)
-
-            if module_options:
-                module_input = ui.select(
-                    module_options,
-                    value=existing_module or None,
-                    label="",
-                ).classes("w-full mb-1")
-            else:
-                module_input = ui.select(
-                    [],
-                    label="",
-                ).classes("w-full mb-1").props("disable")
-                ui.label(
-                    "You have no modules assigned yet. Contact your admin to "
-                    "get modules assigned to you before selecting one here."
-                ).classes("text-sm text-negative mb-3")
-
-            # Topic / knowledge point (free text, optional) -- separate from
-            # the title, since the title alone often doesn't say what the
-            # question is actually about (e.g. a title of "Definitions"
-            # gives no hint that it covers stacks). Shown as a chip in the
-            # question list/detail pages.
-            ui.label("Topic / Knowledge Point").classes("font-semibold")
-            topic_input = ui.input(
-                value=question.get("Topic", ""),
-                placeholder='e.g. "Stacks", "Kruskal\'s Algorithm", "Binary Search Trees" (optional)',
-                autocomplete=list_topics(username),
-            ).classes("w-full mb-4")
-
-            # Optional description / shared context for the main question
-            ui.label("Description (optional)").classes("font-semibold")
-            main_text_input = ui.textarea(
-                value=question.get("Main question", ""),
-                placeholder="Optional description or shared context for this question (leave blank if none)"
-            ).classes("w-full mb-4").props("rows=4")
-
-            ui.separator().classes("my-2")
-
-            # Sub-questions (子小题). Each major question (大题) can be
-            # broken down into multiple sub-questions (子小题); each
-            # sub-question carries its own standard answer and a reserved
-            # blank-answer area on the exported paper.
-            ui.label("Sub-questions").classes("font-semibold")
-            ui.label(
-                "Break this question down into sub-questions (a), (b), (c)... "
-                "Each sub-question should have its own standard answer and a "
-                "reserved blank area for the student to write their answer."
-            ).classes("text-sm text-grey-600 mb-1")
-
-            parts_container = ui.column().classes("w-full gap-2")
-
-            def recalc_total():
-                """Recompute total marks from sub-questions and refresh the UI.
-
-                Locks/unlocks the manual Marks field, updates the
-                total-marks label, and toggles visibility of the overall
-                Answer section, in response to sub-questions being added,
-                removed, or having their marks edited.
-                """
-                total = sum((p.get("marks") or 0) for p in parts_data)
-                if parts_data:
-                    marks_input.value = total
-                    marks_input.disable()
-                    total_label.text = f"Total marks (auto-calculated from {len(parts_data)} sub-question(s)): {total}"
-                    answer_section.set_visibility(False)
-                else:
-                    marks_input.enable()
-                    total_label.text = ""
-                    answer_section.set_visibility(True)
-
-            def render_parts():
-                """Redraw the whole sub-questions list from parts_data.
-
-                Clears and rebuilds parts_container so it reflects the
-                current parts_data: one card per sub-question with its
-                description, marks, standard answer, and reserved answer
-                space fields.
-                """
-                parts_container.clear()
-                with parts_container:
-                    # Each make_*_handler below is a small factory that
-                    # closes over this loop iteration's `idx` and returns
-                    # the actual NiceGUI event handler -- needed because a
-                    # plain closure over the loop variable `i` would see
-                    # whatever `i` ended up being after the loop finished,
-                    # not the value at the time the widget was created.
-                    for i, part in enumerate(parts_data):
-
-                        def make_desc_handler(idx):
-                            """Return a handler that updates sub-question `idx`'s description text."""
-                            def handler(e):
-                                parts_data[idx]["description"] = e.value
-
-                            return handler
-
-                        def make_marks_handler(idx):
-                            """Return a handler that updates sub-question `idx`'s marks and recalculates the total."""
-                            def handler(e):
-                                parts_data[idx]["marks"] = e.value or 0
-                                recalc_total()
-
-                            return handler
-
-                        def make_answer_handler(idx):
-                            """Return a handler that updates sub-question `idx`'s standard answer text."""
-                            def handler(e):
-                                parts_data[idx]["answer"] = e.value
-
-                            return handler
-
-                        def make_answer_space_handler(idx):
-                            """Return a handler that updates sub-question `idx`'s reserved answer space."""
-                            def handler(e):
-                                parts_data[idx]["answer_space"] = e.value or "half"
-
-                            return handler
-
-                        def make_remove_handler(idx):
-                            """Return a handler that deletes sub-question `idx` and redraws the list."""
-                            def handler():
-                                parts_data.pop(idx)
-                                render_parts()
-                                recalc_total()
-
-                            return handler
-
-                        with ui.card().classes("w-full border pb-2").props("flat bordered"):
-                            with ui.row().classes("w-full items-start gap-2"):
-                                ui.label(f"({_label_for_index(i)})").classes("font-semibold w-10 pt-3")
-                                ui.textarea(
-                                    placeholder="Sub-question text (optional)",
-                                    value=part.get("description", ""),
-                                    on_change=make_desc_handler(i),
-                                ).classes("flex-grow").props("rows=2")
-                                ui.number(
-                                    label="Marks",
-                                    min=0,
-                                    step=1,
-                                    value=part.get("marks", 0),
-                                    on_change=make_marks_handler(i),
-                                ).classes("w-28")
-                                ui.button(
-                                    icon="delete",
-                                    color="red",
-                                    on_click=make_remove_handler(i),
-                                ).props("flat dense round")
-
-                            with ui.row().classes("w-full items-start gap-2 pl-12"):
-                                ui.textarea(
-                                    label="Standard answer",
-                                    placeholder="Standard answer for this sub-question",
-                                    value=part.get("answer", ""),
-                                    on_change=make_answer_handler(i),
-                                ).classes("flex-grow").props("rows=2")
-                                ui.select(
-                                    {"half": "Half page", "full": "Full page (new page)"},
-                                    label="Reserved answer space",
-                                    value=part.get("answer_space", "half"),
-                                    on_change=make_answer_space_handler(i),
-                                ).classes("w-56")
-
-            def add_part():
-                """Append a new, empty sub-question and redraw the list."""
-                parts_data.append({
-                    "description": "",
-                    "marks": 0,
-                    "answer": "",
-                    "answer_space": "half",
-                })
-                render_parts()
-                recalc_total()
-
-            ui.button("+ Add sub-question", on_click=add_part, color="secondary").classes("mt-2")
-
-            total_label = ui.label("").classes("text-sm font-semibold mt-2")
-
-            # Marks (manual entry; auto-calculated and locked once
-            # sub-questions are added)
-            ui.label("Marks").classes("font-semibold mt-4")
-            marks_input = ui.number(
-                label="",
-                value=question.get("Marks", 1),
-                min=1,
-                step=1
-            ).classes("w-full mb-4")
-
-            # Answer (overall answer/marking notes for the question). This
-            # only applies to a plain question with no sub-questions: once
-            # sub-questions are added, the answer "lives" with each
-            # sub-question instead (see "Standard answer" above), so this
-            # section is hidden.
-            with ui.column().classes("w-full gap-0") as answer_section:
-                ui.label("Answer").classes("font-semibold")
-                answer_input = ui.textarea(
-                    value=question.get("Answer", ""),
-                    placeholder="Enter the answer"
-                ).classes("w-full mb-4").props("rows=3")
-
-            # Render any pre-existing sub-questions and lock/compute Marks
-            # (and hide the overall Answer section) if there are any
-            render_parts()
-            recalc_total()
-
-            # Status (read-only display)
-            ui.label(f"Status: {question.get('Status', 'Unknown')}").classes("text-sm text-grey-600 mb-4")
-
-            # Version (read-only display)
-            ui.label(f"Version: {question.get('Version', 1)}").classes("text-sm text-grey-600 mb-4")
-
-            # Buttons
-            with ui.row().classes("gap-4 mt-2"):
-
-                def save_changes():
-                    """Validate the form and persist the edited question to the database.
-
-                    Re-validates the title/answer/sub-question
-                    requirements, builds the sub-question payload, bumps
-                    the version number, then calls
-                    database.update_question and replace_question_parts
-                    before navigating back to the question list. Shows a
-                    notification and returns early on the first
-                    validation failure encountered.
-                    """
-
-                    title = (title_input.value or "").strip()
-                    module = (module_input.value or "").strip().upper()
-                    topic = (topic_input.value or "").strip()
-                    main_text = (main_text_input.value or "").strip()
-                    # answer_input's initial value is question.get("Answer", "")
-                    # -- which is None (not "") whenever the question has
-                    # sub-questions, since the parent's own "Answer" column is
-                    # unused in that case. The field stays hidden but still
-                    # exists in the DOM, so .value is still read here every
-                    # time Save is clicked, even for questions with parts --
-                    # without this guard, editing *any* question that has
-                    # sub-questions crashed this whole handler on this line
-                    # (silently, since NiceGUI just logs synchronous handler
-                    # exceptions server-side -- Save looked like it did
-                    # nothing at all).
-                    answer = (answer_input.value or "").strip()
-
-                    # Validate inputs
-                    if not title:
-                        ui.notify("Question title is required.", color="negative")
-                        return
-
-                    if not parts_data and not answer:
-                        ui.notify("Answer is required.", color="negative")
-                        return
-
-                    # Build sub-question payload (if any) and work out marks.
-                    # Each sub-question carries its own standard answer and a
-                    # reserved answer space ('half' or 'full' page).
-                    parts_payload = [
-                        {
-                            "Description": (p.get("description") or "").strip() or None,
-                            "Marks": int(p.get("marks") or 0),
-                            "Answer": (p.get("answer") or "").strip() or None,
-                            "Answer space": p.get("answer_space") if p.get("answer_space") in ("half", "full") else "half",
-                        }
-                        for p in parts_data
-                    ]
-
-                    if parts_payload:
-                        if any(p["Marks"] <= 0 for p in parts_payload):
-                            ui.notify("Each sub-question must have marks greater than 0.", color="negative")
-                            return
-                        if any(not p["Answer"] for p in parts_payload):
-                            ui.notify("Each sub-question must have a standard answer.", color="negative")
-                            return
-                        marks = sum(p["Marks"] for p in parts_payload)
-                    else:
-                        marks = marks_input.value
-                        if not marks or marks <= 0:
-                            ui.notify("Marks must be greater than 0.", color="negative")
-                            return
-
-                    # Create updated question object (preserve existing fields)
-                    updated_question = {
-                        "Question": title,
-                        "Main question": main_text or None,
-                        "Marks": marks,
-                        "Answer": answer or None,
-                        "Status": question.get("Status", "Draft"),
-                        "Version": question.get("Version", 1) + 1,  # Increment version
-                        "Created by": question.get("Created by", username),
-                        "Created at": question.get("Created at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                        "Updated at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Usage": question.get("Usage", 0),
-                        "Module": module or None,
-                        "Topic": topic or None,
-                    }
-
-                    # Update in database
-                    success = update_question(question_id, updated_question)
-
-                    # Sync sub-questions (replaces old ones, re-sums Marks;
-                    # if the list is now empty, the manually-entered Marks
-                    # value above is kept as-is)
-                    if parts_payload:
-                        replace_question_parts(question_id, parts_payload)
-                    else:
-                        replace_question_parts(question_id, [])
-
-                    if success:
-                        ui.notify(
-                            "Question updated successfully!",
-                            color="positive"
-                        )
-                        ui.navigate.to("/questions")
-                    else:
-                        ui.notify(
-                            "Failed to update question.",
-                            color="negative"
-                        )
-
-                ui.button(
-                    "Save Changes",
-                    on_click=save_changes,
-                    color="primary"
-                )
-
-                ui.button(
-                    "Cancel",
-                    on_click=lambda: ui.navigate.to("/questions")
-                )
-
-                ui.button(
-                    "View Question",
-                    on_click=lambda: ui.navigate.to(f"/questions/{question_id}")
-                )
+    render_question_editor(
+        page_heading=f"Edit Question #{display_id}",
+        save_button_label="Save Changes",
+        assigned_modules=assigned_modules,
+        existing_topics=existing_topics,
+        initial={
+            "title": question.get("Question", ""),
+            "module": question.get("Module") or "",
+            "topic": question.get("Topic") or "",
+            "main_text": question.get("Main question") or "",
+            "marks": question.get("Marks") or 1,
+            "answer": question.get("Answer") or "",
+            "parts_data": parts_data,
+        },
+        meta_lines=[
+            f"Status: {question.get('Status', 'Unknown')}",
+            f"Version: {question.get('Version', 1)}",
+        ],
+        extra_actions=[
+            ("View Question", lambda: ui.navigate.to(f"/questions/{question_id}")),
+        ],
+        on_save=on_save,
+    )

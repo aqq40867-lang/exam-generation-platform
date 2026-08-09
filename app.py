@@ -8,6 +8,7 @@ NiceGUI web server.
 from nicegui import ui
 from pages.login import login_page
 from pages.signup import signup_page
+from pages.module_selection import module_selection_page
 from pages.question_list import question_list_page
 from pages.question_detail import question_detail_page
 from pages.create_question import create_question_page
@@ -33,6 +34,12 @@ def login():
 def signup():
     """Renders the create-new-account page."""
     signup_page()
+
+
+@ui.page('/modules')
+def modules():
+    """Renders the module selection page (first page after login)."""
+    module_selection_page()
 
 
 @ui.page('/questions')

@@ -222,7 +222,17 @@ def question_list_page():
                     on_click=lambda code=code: select_module(code),
                 ).classes("rounded-borders cursor-pointer")
 
-        select_module(None)
+        # If we got here via a module card on the Module Selection page,
+        # that page left its pick in session storage -- consume it as a
+        # one-shot initial filter (popped, not left sticky, so a plain
+        # revisit to this page later still starts on "All Questions").
+        # Falls back to "All Questions" if the stashed module no longer
+        # appears in this teacher's sidebar (e.g. it was unassigned in
+        # between).
+        pending_filter = app.storage.user.pop("module_filter", None)
+        if pending_filter not in sidebar_modules:
+            pending_filter = None
+        select_module(pending_filter)
 
     # Custom "Actions" cell: a dropdown (kebab) menu with View / Edit / Delete
     table.add_slot("body-cell-actions", r"""

@@ -36,6 +36,7 @@ from models import (
     Exam,
     ExamQuestion,
     TeacherModule,
+    TeacherTopic,
     _row_to_dict,
 )
 
@@ -94,6 +95,12 @@ def init_db():
                 conn.execute(text('ALTER TABLE question_parts ADD COLUMN "Image data" TEXT'))
             if "Image filename" not in existing_columns:
                 conn.execute(text('ALTER TABLE question_parts ADD COLUMN "Image filename" TEXT'))
+            if "Answer table spec" not in existing_columns:
+                conn.execute(text('ALTER TABLE question_parts ADD COLUMN "Answer table spec" TEXT'))
+            if "Content blocks" not in existing_columns:
+                conn.execute(text('ALTER TABLE question_parts ADD COLUMN "Content blocks" TEXT'))
+            if "Sub parts" not in existing_columns:
+                conn.execute(text('ALTER TABLE question_parts ADD COLUMN "Sub parts" TEXT'))
 
     # Migration: add "Topic" to questions if this is an existing database
     # from before the topic/knowledge-point field existed. Same
@@ -155,6 +162,31 @@ def init_db():
                 ~QuestionPart.answer_space.in_(["half", "full"]),
             )
         ).update({QuestionPart.answer_space: "half"}, synchronize_session=False)
+
+        # Migration/backfill: seed teacher_topics from every distinct
+        # (Created by, Topic) pair already used on an existing question,
+        # for teachers upgrading from before the dedicated topic-labels
+        # table existed. Without this, a topic a teacher had already used
+        # on a question would vanish from the select-or-add Topic field's
+        # suggestion list the moment this version starts up, even though
+        # it's still sitting right there on that question. Safe to run on
+        # every startup: skips any pair already present.
+        existing_pairs = {
+            (row.username, row.topic) for row in session.query(TeacherTopic)
+        }
+        topic_rows = (
+            session.query(Question.created_by, Question.topic)
+            .filter(Question.topic.isnot(None), func.trim(Question.topic) != "")
+            .distinct()
+            .all()
+        )
+        for created_by, topic in topic_rows:
+            if not created_by:
+                continue
+            pair = (created_by, topic)
+            if pair not in existing_pairs:
+                session.add(TeacherTopic(username=created_by, topic=topic))
+                existing_pairs.add(pair)
 
         session.commit()
     finally:
@@ -617,37 +649,67 @@ def list_modules():
         session.close()
 
 
-def list_topics(username: str):
-    """Lists every distinct "Topic" value already used by one teacher.
+def list_teacher_topics(username: str):
+    """Lists every reusable Topic / Knowledge Point label a teacher has created.
 
-    "Topic" is a free-text field (not a controlled list), so this exists
-    purely to power an autocomplete suggestion list on the create/edit
-    forms -- it keeps a teacher from typing "Stack" on one question and
-    "Stacks" on another purely by accident, without forcing a rigid
-    taxonomy on them.
+    Reads from the dedicated `teacher_topics` table (not derived from
+    live Question rows) -- see models.py's TeacherTopic docstring for why:
+    a label stays selectable in the create/edit forms' select-or-add
+    Topic field even after the last question using it is deleted or
+    edited to use a different one.
 
     Args:
-        username: The teacher whose own questions ("Created by") should
-            be scanned for topics.
+        username: The teacher whose own labels should be listed.
 
     Returns:
-        A sorted list of distinct, non-empty "Topic" values.
+        A sorted list of distinct, non-empty topic label strings.
     """
     session = get_session()
     try:
-        # See the matching NOTE in list_modules() -- same Postgres
-        # DISTINCT + ORDER BY restriction, sorted in Python instead.
         rows = (
-            session.query(Question.topic)
-            .filter(
-                Question.created_by == username,
-                Question.topic.isnot(None),
-                func.trim(Question.topic) != "",
-            )
-            .distinct()
+            session.query(TeacherTopic.topic)
+            .filter(TeacherTopic.username == username)
+            .order_by(func.lower(TeacherTopic.topic))
             .all()
         )
-        return sorted((r[0] for r in rows), key=str.lower)
+        return [r[0] for r in rows]
+    finally:
+        session.close()
+
+
+def add_teacher_topic(username: str, topic: str) -> None:
+    """Records a Topic / Knowledge Point label as one of a teacher's reusable choices.
+
+    Called whenever a question is saved with a non-blank Topic (see
+    create_question.py / edit_question.py), so typing a brand-new label
+    once is enough for it to show up as a selectable option on every
+    later question -- "Topic" is still free text on the question itself,
+    this just keeps a persistent, de-duplicated record of every label
+    this teacher has ever used. A no-op if this exact (username, topic)
+    pair is already recorded (`teacher_topics` has a UNIQUE constraint on
+    that pair).
+
+    Args:
+        username: The teacher the label belongs to.
+        topic: The label text. Ignored if blank.
+    """
+    topic = (topic or "").strip()
+    if not topic:
+        return
+    session = get_session()
+    try:
+        exists = (
+            session.query(TeacherTopic)
+            .filter(TeacherTopic.username == username, TeacherTopic.topic == topic)
+            .first()
+        )
+        if not exists:
+            session.add(TeacherTopic(username=username, topic=topic))
+            session.commit()
+    except IntegrityError:
+        # Lost a race with another concurrent save using the same new
+        # label -- the row now exists either way, nothing more to do.
+        session.rollback()
     finally:
         session.close()
 
@@ -762,15 +824,73 @@ def _label_for_index(index: int) -> str:
     return label
 
 
+def _blocks_from_legacy(part: dict) -> list:
+    """Synthesizes a "Content blocks" list from a part's flat legacy fields.
+
+    Used for rows saved before the "Content blocks" column existed (every
+    row written by edit_question.py, and any row written by an older
+    version of create_question.py): reconstructs the equivalent ordered
+    blocks in the old fixed layout -- description text, then the attached
+    image (if any), then the table (if this is a "table" part) -- so
+    latex_export.py and question_detail.py can treat every part
+    uniformly as "a list of blocks" without needing to know this row
+    predates that concept.
+
+    Args:
+        part: A part dict already run through _row_to_dict (keyed by DB
+            column names, e.g. "Description", "Image data"), with "Table
+            spec"/"Answer table spec" already decoded from JSON.
+
+    Returns:
+        A list of block dicts, e.g. [{"type": "text", "text": "..."},
+        {"type": "image", "image_data": ..., "image_filename": ...},
+        {"type": "table", "table_spec": {...}, "answer_table_spec": {...}}].
+    """
+    blocks = []
+    description = part.get("Description")
+    if description and str(description).strip():
+        blocks.append({"type": "text", "text": description})
+    image_data = part.get("Image data")
+    if image_data:
+        blocks.append({
+            "type": "image",
+            "image_data": image_data,
+            "image_filename": part.get("Image filename"),
+        })
+    if (part.get("Part type") or "text") == "table":
+        blocks.append({
+            "type": "table",
+            "table_spec": part.get("Table spec"),
+            "answer_table_spec": part.get("Answer table spec"),
+        })
+    return blocks
+
+
 def get_question_parts(question_id: int):
     """Lists all sub-questions belonging to a main question, in order.
 
-    Each dict includes "Part type" ("text", "table", "material", or
-    "image") and, for "table" parts, "Table spec" -- decoded back from
-    JSON into a plain dict/list structure (see replace_question_parts'
-    docstring for its shape). "Table spec" is None for every other type.
-    "material"/"image" parts have "Label" as None (they aren't lettered
-    sub-questions) and "Marks" forced to 0.
+    Each dict includes "Part type" ("text", "table", or the legacy
+    "material"/"image") and, for "table" parts, "Table spec" (the
+    *problem* table -- what the student sees) and "Answer table spec"
+    (the *answer* table, shown only on the solutions export) -- both
+    decoded back from JSON into a plain dict/list structure (see
+    replace_question_parts' docstring for the shape). Both are None for
+    "text" parts. Legacy "material"/"image" parts have "Label" as None
+    (they aren't lettered sub-questions) and "Marks" forced to 0.
+
+    Each dict also includes "Content blocks" -- the ordered list of
+    content blocks (text/image/table, in whatever order the teacher
+    arranged them) that latex_export.py and question_detail.py actually
+    render from. Decoded from JSON if the row has one; otherwise
+    synthesized on the fly from the legacy fields above via
+    _blocks_from_legacy(), so older rows render exactly as they always
+    have without needing a one-off data migration.
+
+    Each dict also includes "Sub parts" -- the ordered list of nested
+    sub-sub-questions, (i)/(ii)/(iii)... under this (a)/(b)/(c)...
+    sub-question (see models.py's QuestionPart.sub_parts for the shape).
+    Decoded from JSON if present, otherwise an empty list (no older row
+    ever had these, so there's no legacy shape to synthesize).
 
     Args:
         question_id: The parent question's primary key.
@@ -791,6 +911,12 @@ def get_question_parts(question_id: int):
             d = _row_to_dict(p)
             raw_spec = d.get("Table spec")
             d["Table spec"] = json.loads(raw_spec) if raw_spec else None
+            raw_answer_spec = d.get("Answer table spec")
+            d["Answer table spec"] = json.loads(raw_answer_spec) if raw_answer_spec else None
+            raw_blocks = d.get("Content blocks")
+            d["Content blocks"] = json.loads(raw_blocks) if raw_blocks else _blocks_from_legacy(d)
+            raw_sub_parts = d.get("Sub parts")
+            d["Sub parts"] = json.loads(raw_sub_parts) if raw_sub_parts else []
             parts.append(d)
         return parts
     finally:
@@ -807,7 +933,9 @@ def replace_question_parts(question_id: int, parts: list) -> int:
 
     Applies `parts` in the desired display order.
 
-    `parts` is a list of dicts. Every part carries "Part type" -- one of:
+    `parts` is a list of dicts. Every part is a lettered, gradable
+    "sub-problem" carrying "Part type" -- "text" or "table" -- plus,
+    regardless of type, an optional attached image:
 
         "text"     -- a gradable sub-question. "Description" (may be
                       empty/None), "Marks" (int), "Answer" (its standard
@@ -815,39 +943,71 @@ def replace_question_parts(question_id: int, parts: list) -> int:
                       much blank space to reserve on the exported paper;
                       'full' forces a page break) all apply as before.
 
-        "table"    -- a gradable step-by-step/tracing sub-question.
-                      "Marks" applies; "Table spec" is a plain dict shaped
-                      like:
+        "table"    -- a gradable step-by-step/tracing sub-question. Its
+                      answer lives in a table, not free text, so "Answer"
+                      is unused. "Marks" applies; "Table spec" (the
+                      *problem* table, what the student sees) and
+                      "Answer table spec" (the *answer* table, filled in
+                      with the correct values) are each a plain dict
+                      shaped like:
                           {
                               "given_columns": ["Step", "Edge", "Weight"],
                               "answer_columns": ["Taken?", "Current MST edges"],
                               "rows": [["1", "P-R", "3", "Yes", "P-R"], ...],
                           }
-                      "given_columns" are shown filled-in on every export
-                      (information the student is given); "answer_columns"
-                      are left blank on the official/example paper and
-                      filled in on the solutions export. Each row must have
-                      len(given_columns) + len(answer_columns) entries,
-                      given values first. JSON-encoded before storage (a
-                      Postgres Text column, no native JSON column needed).
-                      "Answer" is unused -- the row data carries the answer.
+                      These are two independent tables (not one table with
+                      masked columns): "Table spec" is rendered as-is on
+                      the official/example paper -- whatever the teacher
+                      left blank stays blank -- and "Answer table spec" is
+                      rendered instead, in full, only on the solutions
+                      export. Each row must have len(given_columns) +
+                      len(answer_columns) entries, given values first.
+                      Both are JSON-encoded before storage (a Postgres
+                      Text column, no native JSON column needed).
 
-        "material" -- a non-gradable block of reading material/stimulus
-                      text (from "Description"), shown inline wherever it
-                      sits in the order -- not confined to the top of the
-                      question like the parent "Main question" field.
+    Any part, regardless of "Part type", may also carry "Image data" (raw
+    image bytes, base64-encoded) and "Image filename" (the original
+    uploaded filename, display only -- export sniffs the real format from
+    the bytes) -- an attached diagram/screenshot shown inline right under
+    the sub-question's description.
 
-        "image"    -- a non-gradable embedded image. "Image data" is the
-                      raw image bytes, base64-encoded; "Image filename" is
-                      the original uploaded filename (display only --
-                      export sniffs the real format from the bytes).
-                      "Description" doubles as an optional caption.
+    A part may also carry "Content blocks" -- the ordered list of
+    text/image/table blocks that create_question.py's block editor
+    actually produces (see models.py's QuestionPart.content_blocks for
+    the shape). When present, this is what latex_export.py and
+    question_detail.py render from, letting text/image/table appear in
+    whatever order the teacher arranged them rather than the fixed
+    "description, then image, then table" layout implied by the flat
+    fields above. Those flat fields ("Description", "Image data", "Table
+    spec", ...) are still expected to be filled in alongside it as
+    best-effort single-value summaries (concatenated text, first image,
+    first table) -- callers that don't understand blocks yet (e.g.
+    edit_question.py's "can this be edited here" check, or a future
+    admin report) keep working off them. If "Content blocks" is omitted
+    entirely (e.g. a save coming from edit_question.py, which only ever
+    produces a single plain-text block), it's reconstructed on read from
+    the flat fields by get_question_parts() instead -- see
+    _blocks_from_legacy().
 
-    Falls back to "text" if "Part type" is missing/unrecognised.
+    A part may also carry "Sub parts" -- the ordered list of nested
+    sub-sub-questions, (i)/(ii)/(iii)... under this (a)/(b)/(c)...
+    sub-question, that create_question.py's sub-parts editor produces
+    (see models.py's QuestionPart.sub_parts for the shape). When present
+    and non-empty, the caller (create_question.py's _build_part_dict) has
+    already set this part's own "Marks" to the sum of its sub-parts'
+    marks -- this function just stores whatever "Marks" it's given as-is,
+    the same as for a part with no sub-parts.
+
+    Falls back to "text" if "Part type" is missing/unrecognised. Also
+    still accepts the legacy "material" (non-gradable reading-material
+    block) and "image" (non-gradable standalone image) types on rows
+    written by older versions of this app -- current callers (
+    create_question.py) never produce these anymore, but old data reads
+    and re-saves correctly.
 
     Only "text" and "table" parts are lettered (a), (b), (c)... and count
-    towards the parent's total marks -- "material"/"image" parts get
-    "Label" set to None and "Marks" forced to 0 regardless of what's
+    towards the parent's total marks -- legacy "material"/"image" parts
+    get "Label" set to None and "Marks" forced to 0 regardless of what's
     passed in, since they're stimulus content, not something a student
     answers. Callers never need to manage labels themselves; they're
     (re)assigned from the list order, skipping non-gradable parts.
@@ -885,7 +1045,13 @@ def replace_question_parts(question_id: int, parts: list) -> int:
 
             answer_space = part.get("Answer space")
             table_spec = part.get("Table spec")
+            answer_table_spec = part.get("Answer table spec")
+            # An image can be attached to a "text" or "table" part (or, for
+            # legacy rows, stand alone as its own "image"-type part) -- no
+            # longer gated to part_type == "image" only.
             image_data = part.get("Image data")
+            content_blocks = part.get("Content blocks")
+            sub_parts = part.get("Sub parts")
 
             session.add(QuestionPart(
                 question_id=question_id,
@@ -897,8 +1063,13 @@ def replace_question_parts(question_id: int, parts: list) -> int:
                 answer_space=answer_space if answer_space in ("half", "full") else "half",
                 part_type=part_type,
                 table_spec=json.dumps(table_spec) if (part_type == "table" and table_spec) else None,
-                image_data=image_data if (part_type == "image" and image_data) else None,
-                image_filename=part.get("Image filename") if part_type == "image" else None,
+                answer_table_spec=(
+                    json.dumps(answer_table_spec) if (part_type == "table" and answer_table_spec) else None
+                ),
+                image_data=image_data or None,
+                image_filename=part.get("Image filename") if image_data else None,
+                content_blocks=json.dumps(content_blocks) if content_blocks else None,
+                sub_parts=json.dumps(sub_parts) if sub_parts else None,
             ))
 
         if parts:

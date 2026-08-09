@@ -258,13 +258,15 @@ _HEADER = r"""\documentclass[12pt]{article}
 \usepackage[a4paper, margin=2.5cm]{geometry}
 \usepackage[utf8]{inputenc}
 \usepackage{amssymb}
-\usepackage{xcolor}
+\usepackage[table]{xcolor}
 \usepackage{framed}
 \usepackage{longtable}
+\usepackage{array}
 \usepackage{graphicx}
 \definecolor{shadecolor}{gray}{0.92}
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{6pt}
+\setlength{\tabcolsep}{8pt}
 
 \begin{document}
 
@@ -345,31 +347,40 @@ def _render_solution_block(answer_text) -> str:
     )
 
 
-def _render_table_part(part: dict, mode: str) -> str:
-    """Render a bordered LaTeX table for a "table"-type part.
+def _render_table_spec(spec: dict, *, stretched: bool) -> str:
+    """Render a bordered, wrapped LaTeX table from a resolved table spec.
 
     Used for step-by-step / tracing questions -- see database.py's
-    replace_question_parts docstring for the "Table spec" shape this
-    reads.
+    replace_question_parts docstring for the "Table spec"/"Answer table
+    spec" shape this reads. A "table"-type part carries two independent
+    specs (the problem table and the answer table); the caller
+    (`_render_question`) picks which one to pass in based on export mode
+    -- there's no per-column masking here any more, cells are printed
+    exactly as given (including blank, for "the student writes here").
 
-    "given_columns" are filled in on every export mode (they're
-    information the student is handed, e.g. the edges of a graph and their
-    weights). "answer_columns" are left blank on official/example papers
-    so the student has somewhere to write, and filled in on the solutions
-    export. Row height is stretched on official/example so there's
-    actually room to write in the blank cells; solutions uses a normal,
-    compact row height since nothing needs to be written by hand there.
+    Columns are wrapped `p{width}` cells (evenly splitting the page's
+    text width, `array`'s `\\raggedright\\arraybackslash` keeps them
+    left-aligned) rather than plain unwrapped `l` columns -- a plain `l`
+    column never breaks a long header or cell onto a second line, so a
+    single full-sentence cell used to silently push the whole table past
+    the page's right margin instead of wrapping. The header row gets a
+    light shaded background (`colortbl`, via `xcolor`'s `table` option)
+    so it reads as a header at a glance instead of just being bold text
+    on the same white background as the data rows.
+
+    Row height is stretched when `stretched` is True so there's actually
+    room to write by hand in a blank cell (the problem table, on
+    official/example); the answer table uses a normal, compact row
+    height since nothing needs to be written by hand there.
 
     Args:
-        part: The question part dict, expected to hold a "Table spec".
-        mode: Export mode ("official", "example", or "solutions");
-            controls whether answer columns are filled in.
+        spec: A {"given_columns", "answer_columns", "rows"} dict.
+        stretched: Whether to reserve extra row height for handwriting.
 
     Returns:
         LaTeX source for the table, or an escaped placeholder message if
-        the part has no columns or rows configured yet.
+        the spec has no columns or rows configured yet.
     """
-    spec = part.get("Table spec") or {}
     given_cols = [str(c) for c in (spec.get("given_columns") or [])]
     answer_cols = [str(c) for c in (spec.get("answer_columns") or [])]
     rows = spec.get("rows") or []
@@ -379,8 +390,23 @@ def _render_table_part(part: dict, mode: str) -> str:
     if n == 0 or not rows:
         return escape_latex("(This table has not been configured yet.)")
 
-    col_spec = "|" + "|".join(["l"] * n) + "|"
-    header_row = " & ".join(r"\textbf{%s}" % escape_latex(h) for h in headers) + r" \\ \hline"
+    # \textwidth for this document is ~16cm (a4paper, 2.5cm margins on
+    # both sides -- see the `geometry` package options in _HEADER). Split
+    # it evenly across columns, minus a small per-column allowance for
+    # cell padding/rule width so an n-column table lands at (not just
+    # under) \linewidth instead of a hair over it. Floored at 1.6cm so a
+    # table with many columns stays readable rather than collapsing to
+    # sliver-thin cells -- it may then run slightly past \linewidth, but
+    # that's a graceful degrade for an unusually wide table rather than
+    # the normal case.
+    col_width_cm = max(1.6, 16.0 / n - 0.35)
+    col_type = r">{\raggedright\arraybackslash}p{%.2fcm}" % col_width_cm
+    col_spec = "|" + "|".join([col_type] * n) + "|"
+    header_row = (
+        r"\rowcolor{gray!15}"
+        + " & ".join(r"\textbf{%s}" % escape_latex(h) for h in headers)
+        + r" \\ \hline"
+    )
 
     # A plain `tabular` is an atomic box to LaTeX's page breaker: if it
     # doesn't fit in the space left on the current page, the *whole* table
@@ -393,7 +419,7 @@ def _render_table_part(part: dict, mode: str) -> str:
     # break across a page boundary between rows (never mid-row), repeating
     # the header on each new page so it's still readable.
     lines = []
-    lines.append(r"\renewcommand{\arraystretch}{%s}" % ("1.3" if mode == "solutions" else "2.4"))
+    lines.append(r"\renewcommand{\arraystretch}{%s}" % ("2.4" if stretched else "1.3"))
     lines.append(r"\begingroup\centering")
     lines.append(r"\begin{longtable}{%s}" % col_spec)
     lines.append(r"\hline")
@@ -412,18 +438,86 @@ def _render_table_part(part: dict, mode: str) -> str:
     lines.append(r"\endlastfoot")
     for row in rows:
         cells = [str(c) for c in row] + [""] * max(0, n - len(row))
-        rendered = []
-        for i in range(n):
-            cell = cells[i] if i < len(cells) else ""
-            if i < len(given_cols) or mode == "solutions":
-                rendered.append(escape_latex(cell))
-            else:
-                rendered.append("")  # blank answer cell for official/example
+        rendered = [escape_latex(cells[i]) for i in range(n)]
         lines.append(" & ".join(rendered) + r" \\ \hline")
     lines.append(r"\end{longtable}")
     lines.append(r"\endgroup")
     lines.append(r"\renewcommand{\arraystretch}{1}")
     return "\n".join(lines)
+
+
+def _render_table_block(block: dict, *, mode: str) -> str:
+    """Render one "table"-type content block's full body for a given export mode.
+
+    A table block is just its rows on official/example (see
+    _render_table_spec's docstring: the table cells themselves are the
+    answer space, so there's no separate blank area or Solution box for
+    it there). In "solutions" mode, though, a table's answer may need
+    surrounding prose -- e.g. "Solution: sorted edges: ..." explaining
+    the method before the filled-in answer table, and a closing line
+    like "Final MST total weight: 19" after it -- so this also renders
+    the block's optional "answer_text_before"/"answer_text_after" (see
+    create_question.py's _render_block_editor) around the table, but
+    only in "solutions" mode; official/example students never see them.
+
+    Args:
+        block: One "table"-type content block dict, carrying "table_spec",
+            "answer_table_spec", and optionally "answer_text_before"/
+            "answer_text_after".
+        mode: One of _MODES -- picks the problem table vs. answer table,
+            and whether the before/after solution text is rendered at all.
+
+    Returns:
+        LaTeX source for the table (and, in "solutions" mode, any
+        surrounding solution text), ready to be appended as its own
+        block of lines.
+    """
+    if mode == "solutions":
+        spec = block.get("answer_table_spec") or block.get("table_spec") or {}
+    else:
+        spec = block.get("table_spec") or {}
+
+    parts = []
+    if mode == "solutions":
+        before = (block.get("answer_text_before") or "").strip()
+        if before:
+            parts.append(_paragraphs(before))
+    parts.append(_render_table_spec(spec, stretched=(mode != "solutions")))
+    if mode == "solutions":
+        after = (block.get("answer_text_after") or "").strip()
+        if after:
+            parts.append(_paragraphs(after))
+    return "\n\n".join(parts)
+
+
+_ROMAN_VALUES = [
+    (1000, "m"), (900, "cm"), (500, "d"), (400, "cd"),
+    (100, "c"), (90, "xc"), (50, "l"), (40, "xl"),
+    (10, "x"), (9, "ix"), (5, "v"), (4, "iv"), (1, "i"),
+]
+
+
+def _roman_for_index(index: int) -> str:
+    """Converts a zero-based position into a lower-case Roman numeral label.
+
+    E.g. 0 -> "i", 1 -> "ii", 2 -> "iii", 8 -> "ix", etc. Used as a
+    fallback for a "Sub parts" entry that's somehow missing its own
+    "Label" -- create_question.py always sets one, so this only matters
+    for hand-edited/legacy data.
+
+    Args:
+        index: The 0-based position of the sub-part.
+
+    Returns:
+        The Roman numeral label for that position.
+    """
+    n = index + 1
+    result = []
+    for value, symbol in _ROMAN_VALUES:
+        while n >= value:
+            result.append(symbol)
+            n -= value
+    return "".join(result)
 
 
 def _sniff_image_extension(data: bytes) -> str:
@@ -451,8 +545,11 @@ def _sniff_image_extension(data: bytes) -> str:
 
 
 def _collect_image_assets(questions_with_marks: list):
-    """Decode every "image"-type part's base64 image data exactly once.
+    """Decode every part's base64 image data exactly once.
 
+    An image may be attached to any part regardless of "Part type" -- a
+    "text" or "table" sub-problem can carry one alongside its own
+    content, and legacy standalone "image"-type parts still work too.
     Each decoded image is assigned a short filesystem-safe filename.
 
     Args:
@@ -462,30 +559,40 @@ def _collect_image_assets(questions_with_marks: list):
     Returns:
         A tuple (assets, filenames): `assets` is {filename: raw_bytes},
         handed to compile_latex_to_pdf() to write into the compile
-        directory before running the LaTeX engine. `filenames` maps
-        id(part) -> filename, so _render_image_part() can look up the
-        right file while walking the same part dicts -- keyed by Python
-        object identity rather than a database id, since a not-yet-saved
-        preview's parts don't have a database id yet at all.
+        directory before running the LaTeX engine. `filenames` maps both
+        id(part) -> filename (for a legacy standalone "image"-type part,
+        see _render_image_part()) and id(block) -> filename (for an
+        "image" content block, see _render_image_block()) -- keyed by
+        Python object identity rather than a database id, since a
+        not-yet-saved preview's parts/blocks don't have one at all.
     """
     assets = {}
     filenames = {}
     counter = 0
+
+    def _register(raw_b64, key) -> None:
+        nonlocal counter
+        if not raw_b64:
+            return
+        try:
+            data = base64.b64decode(raw_b64)
+        except (ValueError, TypeError):
+            return
+        counter += 1
+        filename = f"img_{counter}.{_sniff_image_extension(data)}"
+        assets[filename] = data
+        filenames[key] = filename
+
     for _question, _marks, parts in questions_with_marks:
         for part in parts:
-            if (part.get("Part type") or "text") != "image":
-                continue
-            raw_b64 = part.get("Image data")
-            if not raw_b64:
-                continue
-            try:
-                data = base64.b64decode(raw_b64)
-            except (ValueError, TypeError):
-                continue
-            counter += 1
-            filename = f"img_{counter}.{_sniff_image_extension(data)}"
-            assets[filename] = data
-            filenames[id(part)] = filename
+            _register(part.get("Image data"), id(part))
+            for block in (part.get("Content blocks") or []):
+                if block.get("type") == "image":
+                    _register(block.get("image_data"), id(block))
+            for sub_part in (part.get("Sub parts") or []):
+                for block in (sub_part.get("Content blocks") or []):
+                    if block.get("type") == "image":
+                        _register(block.get("image_data"), id(block))
     return assets, filenames
 
 
@@ -509,18 +616,23 @@ def _render_material_part(part: dict) -> str:
     return _paragraphs(body)
 
 
-def _render_image_part(part: dict, image_filenames: dict) -> str:
-    """Render a non-gradable embedded image, centered on the page.
-
-    The part's "Description", if any, is shown underneath as an optional
-    caption.
+def _render_image_part(part: dict, image_filenames: dict, *, caption=None) -> str:
+    """Render an embedded image, centered on the page.
 
     Args:
-        part: The question part dict for this "image"-type part.
+        part: The question part dict carrying "Image data".
         image_filenames: The id(part) -> filename map built by
             _collect_image_assets(). The actual file must already have
             been written into the compile directory by the time this is
             used.
+        caption: Optional caption text shown underneath the image. If
+            omitted (None), falls back to the part's own "Description" --
+            correct for a legacy standalone "image"-type part, where
+            "Description" is only ever used as this caption. When an
+            image is attached to a "text"/"table" sub-problem instead,
+            "Description" is that sub-problem's own text (already
+            rendered above, as the item itself) -- callers pass an empty
+            string explicitly there to suppress a duplicate caption.
 
     Returns:
         LaTeX source for the centered image, or an escaped placeholder
@@ -533,12 +645,45 @@ def _render_image_part(part: dict, image_filenames: dict) -> str:
         r"\begin{center}",
         r"\includegraphics[width=0.8\linewidth,height=0.5\textheight,keepaspectratio]{%s}" % filename,
     ]
-    caption = part.get("Description")
+    if caption is None:
+        caption = part.get("Description")
     if caption and str(caption).strip():
         lines.append(r"\\[4pt]")
         lines.append(r"{\small\itshape %s}" % escape_latex(caption))
     lines.append(r"\end{center}")
     return "\n".join(lines)
+
+
+def _render_image_block(block: dict, image_filenames: dict) -> str:
+    """Render one "image"-type content block, centered, with no caption.
+
+    The block-based sibling of _render_image_part() above -- same visual
+    output, but reads a content block's own lowercase keys
+    ("image_data"/"image_filename") instead of a part's DB-column-cased
+    ones, and is looked up in `image_filenames` by id(block) rather than
+    id(part) (a part can now carry more than one image block). Never
+    shows a caption: unlike a legacy standalone "image"-type part (where
+    "Description" doubles as the caption), a block sits inline among a
+    sub-question's other blocks and any caption-like text is just another
+    text block placed next to it.
+
+    Args:
+        block: A content block dict with "type" == "image".
+        image_filenames: The id(...) -> filename map built by
+            _collect_image_assets().
+
+    Returns:
+        LaTeX source for the centered image, or an escaped placeholder
+        message if no matching file was found.
+    """
+    filename = image_filenames.get(id(block))
+    if not filename:
+        return escape_latex("(This image could not be loaded.)")
+    return "\n".join([
+        r"\begin{center}",
+        r"\includegraphics[width=0.8\linewidth,height=0.5\textheight,keepaspectratio]{%s}" % filename,
+        r"\end{center}",
+    ])
 
 
 def _render_question(
@@ -551,7 +696,11 @@ def _render_question(
     order: material/image stimulus content is rendered inline, and
     lettered sub-questions are rendered inside an itemize list, each with
     reserved blank answer space (or a shaded solution box, in
-    "solutions" mode). If the question has no parts, the same blank
+    "solutions" mode) -- unless a sub-question carries its own "Sub
+    parts" (see models.py's QuestionPart.sub_parts), in which case it
+    instead renders a nested itemize of (i)/(ii)/(iii)... sub-parts, each
+    with its own marks/content/answer handling, and reserves no answer
+    space of its own. If the question has no parts, the same blank
     space / solution box is reserved for the question as a whole.
 
     Args:
@@ -639,17 +788,119 @@ def _render_question(
 
             _open_list()
             label = escape_latex(part.get("Label") or "")
-            desc = escape_latex(part.get("Description") or "")
             part_marks = part.get("Marks")
             marks_suffix = r" \hfill \textbf{[%d]}" % part_marks if part_marks else ""
-            lines.append(r"\item[(%s)] %s%s" % (label, desc, marks_suffix))
 
-            if part_type == "table":
-                # A table's own rows are its "answer space" -- no blank
-                # \vspace, no "tick here if you continue" line, and no
-                # separate Solution box in "solutions" mode (the table
-                # itself just gets filled in instead).
-                lines.append(_render_table_part(part, mode))
+            # Sub-problem content is now an ordered list of blocks (text/
+            # image/table, in whatever order the teacher arranged them --
+            # see models.py's QuestionPart.content_blocks and
+            # database.py's get_question_parts()), not the old fixed
+            # "description, then image, then table" layout. The first
+            # block, *if* it's text, sits inline on the "\item[...]" line
+            # itself -- exactly like the old "Description" field did, so a
+            # plain text-only sub-problem's LaTeX is byte-for-byte
+            # unchanged. Everything else (a non-text first block, or any
+            # block after the first) is rendered as its own line(s)
+            # underneath, in order.
+            blocks = part.get("Content blocks") or []
+            has_table_block = any(b.get("type") == "table" for b in blocks)
+            first_is_text = bool(blocks) and blocks[0].get("type") == "text"
+            item_text = escape_latex(blocks[0].get("text") or "") if first_is_text else ""
+            lines.append(r"\item[(%s)] %s%s" % (label, item_text, marks_suffix))
+
+            remaining_blocks = blocks[1:] if first_is_text else blocks
+            for block in remaining_blocks:
+                btype = block.get("type")
+                lines.append("")
+                if btype == "text":
+                    lines.append(_paragraphs(block.get("text") or ""))
+                elif btype == "image":
+                    lines.append(_render_image_block(block, image_filenames))
+                elif btype == "table":
+                    # A table's own rows are its "answer space" -- no
+                    # blank \vspace and no "tick here if you continue"
+                    # line. The problem table (what the student sees) is
+                    # rendered on official/example; the independent
+                    # answer table (filled in with the correct values),
+                    # plus any solution text the teacher attached before/
+                    # after it, is rendered instead, in full, only in
+                    # "solutions" mode -- falling back to the problem
+                    # table if no answer table was ever filled in, so a
+                    # table with no recorded answer doesn't just vanish
+                    # from the solutions export. See _render_table_block.
+                    lines.append(_render_table_block(block, mode=mode))
+
+            # A sub-problem broken down further into (i)/(ii)/(iii)... --
+            # see models.py's QuestionPart.sub_parts -- renders each
+            # sub-part as its own nested \item, with its own marks,
+            # content blocks, and answer space/solution/table handling,
+            # *instead of* this sub-problem reserving an answer area of
+            # its own (its "Marks" is already the sum of its sub-parts',
+            # and its "Answer" is unused -- see create_question.py's
+            # _build_part_dict). A plain nested itemize is fine here:
+            # LaTeX's itemize nests without any extra setup, and every
+            # sub-item's own "\item[(i)]" label already overrides
+            # whatever bullet style that level would otherwise use.
+            sub_parts = part.get("Sub parts") or []
+            if sub_parts:
+                lines.append("")
+                lines.append(r"\begin{itemize}")
+                for sub_idx, sub_part in enumerate(sub_parts):
+                    is_last_sub_item = is_last and (sub_idx == len(sub_parts) - 1)
+                    sub_label = escape_latex(sub_part.get("Label") or _roman_for_index(sub_idx))
+                    sub_marks = sub_part.get("Marks")
+                    sub_marks_suffix = r" \hfill \textbf{[%d]}" % sub_marks if sub_marks else ""
+
+                    sub_blocks = sub_part.get("Content blocks") or []
+                    sub_has_table = any(b.get("type") == "table" for b in sub_blocks)
+                    sub_first_is_text = bool(sub_blocks) and sub_blocks[0].get("type") == "text"
+                    sub_item_text = (
+                        escape_latex(sub_blocks[0].get("text") or "") if sub_first_is_text else ""
+                    )
+                    lines.append(r"\item[(%s)] %s%s" % (sub_label, sub_item_text, sub_marks_suffix))
+
+                    sub_remaining = sub_blocks[1:] if sub_first_is_text else sub_blocks
+                    for block in sub_remaining:
+                        btype = block.get("type")
+                        lines.append("")
+                        if btype == "text":
+                            lines.append(_paragraphs(block.get("text") or ""))
+                        elif btype == "image":
+                            lines.append(_render_image_block(block, image_filenames))
+                        elif btype == "table":
+                            lines.append(_render_table_block(block, mode=mode))
+
+                    if sub_has_table:
+                        lines.append("")
+                        continue
+
+                    if mode == "solutions":
+                        lines.append(_render_solution_block(sub_part.get("Answer")))
+                        continue
+
+                    sub_answer_space = str(sub_part.get("Answer space") or "half").strip().lower()
+                    if sub_answer_space == "full":
+                        lines.append(r"\newpage")
+                        if mode == "official":
+                            lines.append(r"\vspace*{\fill}")
+                            lines.append(_TICK_LINE)
+                            lines.append(r"\newpage")
+                        else:
+                            lines.append(r"\newpage")
+                        items_since_break = 0
+                    else:
+                        lines.append(r"\vspace{0.4\textheight}")
+                        if mode == "official":
+                            lines.append(_TICK_LINE)
+                        items_since_break += 1
+                        if items_since_break >= _MAX_SUB_QUESTIONS_PER_PAGE and not is_last_sub_item:
+                            lines.append(r"\newpage")
+                            items_since_break = 0
+                lines.append(r"\end{itemize}")
+                lines.append("")
+                continue
+
+            if has_table_block:
                 lines.append("")
                 continue
 

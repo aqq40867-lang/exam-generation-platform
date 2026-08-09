@@ -66,28 +66,94 @@ class QuestionPart(Base):
     marks = Column("Marks", Integer, nullable=False, default=0)
     answer = Column("Answer", Text)
     answer_space = Column("Answer space", Text, nullable=False, default="half")
-    # One of four component types (see database.py's replace_question_parts
-    # docstring for the full picture):
-    #   "text"     -- free-form answer (the original behaviour). Gradable:
-    #                 carries "Marks" and a lettered (a)/(b)/(c)... label.
-    #   "table"    -- step-by-step/tracing table; `table_spec` holds the
-    #                 column/row definition (JSON-encoded). Gradable.
-    #   "material" -- a block of reading material/stimulus text (reuses
-    #                 `description`), shown inline wherever it sits in the
-    #                 component order. Not gradable: no marks, no letter
-    #                 label, no answer.
-    #   "image"    -- an embedded image (a diagram, graph, screenshot,
-    #                 etc.), stored as base64 in `image_data`. Also not
-    #                 gradable; `description` doubles as an optional
-    #                 caption.
+    # Every part is a lettered, gradable "sub-problem" -- (a)/(b)/(c)...
+    # -- made up of a description plus any combination of an attached
+    # image and/or an attached table (see create_question.py's sub-problem
+    # editor). "Part type" is "text" or "table" depending on whether a
+    # table is attached; it no longer gates whether an image can be
+    # attached -- `image_data` may be set on either type.
+    #
+    # Legacy values "material" (non-gradable stimulus text block) and
+    # "image" (non-gradable standalone image) can still appear on rows
+    # written by older versions of this app; database.py and
+    # latex_export.py still know how to read/render them, but
+    # create_question.py no longer creates new ones -- an image is now
+    # always attached to a "text"/"table" sub-problem instead of being its
+    # own unlettered component.
+    #   "text"     -- free-form answer. Gradable: carries "Marks" and a
+    #                 lettered (a)/(b)/(c)... label. Optionally has an
+    #                 attached image (`image_data`).
+    #   "table"    -- step-by-step/tracing table. Gradable, same labelling
+    #                 as "text". `table_spec` holds the *problem* table
+    #                 (what the student sees) and `answer_table_spec`
+    #                 holds the *answer* table (shown only in the
+    #                 solutions export) -- two independent JSON-encoded
+    #                 column/row definitions, not one table with masked
+    #                 columns. Optionally has an attached image too.
+    #   "material" -- (legacy) a block of reading material/stimulus text
+    #                 (reuses `description`), not gradable: no marks, no
+    #                 letter label, no answer.
+    #   "image"    -- (legacy) a standalone embedded image, not gradable;
+    #                 `description` doubles as an optional caption.
     part_type = Column("Part type", Text, nullable=False, default="text")
     table_spec = Column("Table spec", Text)
-    # Base64-encoded raw image bytes for an "image" part, and the original
-    # uploaded filename (kept for display/debugging only -- the actual
-    # embedded format is sniffed from the bytes themselves at export time,
-    # not trusted from this name/extension).
+    # The model-answer counterpart to `table_spec`: same
+    # {"given_columns", "answer_columns", "rows"} shape, but fully filled
+    # in with the correct answers. Rendered instead of `table_spec` only
+    # in "solutions" mode. None for "text" parts (and for "table" parts
+    # that haven't had their answer table filled in yet).
+    answer_table_spec = Column("Answer table spec", Text)
+    # Base64-encoded raw image bytes for an attached image, and the
+    # original uploaded filename (kept for display/debugging only -- the
+    # actual embedded format is sniffed from the bytes themselves at
+    # export time, not trusted from this name/extension). May be set
+    # regardless of `part_type`.
     image_data = Column("Image data", Text)
     image_filename = Column("Image filename", Text)
+    # JSON-encoded ordered list of *content blocks* -- the current, richer
+    # replacement for the fixed "one description, then one image, then one
+    # table" layout above. Each block is
+    # {"type": "text", "text": str} |
+    # {"type": "image", "image_data": base64 str, "image_filename": str} |
+    # {"type": "table", "table_spec": {...}, "answer_table_spec": {...}}
+    # (same {"given_columns", "answer_columns", "rows"} shape as
+    # `table_spec`/`answer_table_spec` above), in whatever order the
+    # teacher arranged them in -- e.g. text, then a diagram, then more
+    # text, then a tracing table, letting a sub-problem's image and extra
+    # instructions sit between two paragraphs instead of always after all
+    # of the text. May hold any number of blocks of each type.
+    #
+    # This column is nullable so old rows (written before this feature
+    # existed) don't need a data migration: database.py's
+    # get_question_parts() synthesizes an equivalent blocks list on the
+    # fly from `description`/`image_data`/`table_spec` when this is NULL.
+    # `description`, `image_data`, `image_filename`, `table_spec`, and
+    # `answer_table_spec` are still kept in sync on every save (see
+    # database.py's replace_question_parts) as best-effort single-value
+    # summaries -- concatenated text, first image, first table -- purely
+    # so older code paths that only know about those columns (e.g.
+    # edit_question.py's "can this question be edited here" check) keep
+    # working; `content_blocks` is the source of truth for rendering.
+    content_blocks = Column("Content blocks", Text)
+    # JSON-encoded ordered list of *sub-parts* -- the third numbering level,
+    # (i)/(ii)/(iii)... nested inside this (a)/(b)/(c)... sub-problem, for
+    # questions whose sub-problems are themselves broken down further (see
+    # create_question.py's sub-parts editor). Each entry has exactly the
+    # same shape create_question.py's _build_part_dict() already produces
+    # for a top-level part -- "Label" (here a lower-case Roman numeral,
+    # e.g. "i"), "Content blocks", "Marks", "Answer space", "Part type",
+    # "Table spec", "Answer table spec", "Answer", "Image data", "Image
+    # filename" -- but never itself carries a further "Sub parts" (the
+    # UI caps nesting at this one extra level: 1./2./3. -> (a)(b)(c) ->
+    # (i)(ii)(iii), no deeper).
+    #
+    # When a sub-problem has any sub-parts, its own "Marks" column is the
+    # sum of its sub-parts' marks (mirroring how the parent question's
+    # "Marks" is the sum of its sub-problems' marks) and its own
+    # "Answer"/"Answer space" are unused -- each sub-part carries its own.
+    # NULL/empty for the (still overwhelmingly common) case of a
+    # sub-problem with no further breakdown.
+    sub_parts = Column("Sub parts", Text)
 
 
 class User(Base):
@@ -145,6 +211,27 @@ class TeacherModule(Base):
     id = Column(Integer, primary_key=True)
     username = Column("Username", Text, nullable=False)
     module = Column("Module", Text, nullable=False)
+
+
+class TeacherTopic(Base):
+    """A reusable Topic / Knowledge Point label a teacher has created.
+
+    Offered as select-or-add choices on the create/edit question pages'
+    Topic field (see create_question.py / edit_question.py), scoped to
+    the teacher who created them -- mirrors TeacherModule's shape, but
+    unlike modules (assigned by an admin), a teacher creates their own
+    topic labels freely while authoring a question. A row here persists
+    independently of whether any question currently uses that Topic, so
+    a label a teacher has used before stays selectable even after the
+    last question using it is deleted or edited to use a different one.
+    """
+
+    __tablename__ = "teacher_topics"
+    __table_args__ = (UniqueConstraint("Username", "Topic"),)
+
+    id = Column(Integer, primary_key=True)
+    username = Column("Username", Text, nullable=False)
+    topic = Column("Topic", Text, nullable=False)
 
 
 @event.listens_for(Engine, "connect")

@@ -13,25 +13,28 @@ from database import get_question, delete_question, load_questions, get_question
 from latex_export import build_latex, compile_latex_to_pdf, LatexCompileError
 
 
-def _render_part_table(part: dict):
-    """Render a "table"-type sub-question's rows/columns as a grid.
+def _render_one_table(spec: dict, *, empty_message: str):
+    """Render one {"given_columns", "answer_columns", "rows"} spec as a grid.
 
-    Lets the table's content be seen directly on this page without
-    having to open Edit to find out what it holds. See database.py's
-    replace_question_parts docstring for the "Table spec" shape this
-    reads.
+    Shared by the problem-table and answer-table displays below --
+    columns are shown in given-then-answer order with no masking (the
+    problem table and the answer table are two independent tables now,
+    see database.py's replace_question_parts docstring, so whatever a
+    cell holds -- including blank -- is shown exactly as stored).
 
     Args:
-        part: The question part dict, expected to hold a "Table spec".
+        spec: A {"given_columns", "answer_columns", "rows"} dict, or None.
+        empty_message: Placeholder text shown if `spec` has no columns or
+            rows configured yet.
     """
-    spec = part.get("Table spec") or {}
+    spec = spec or {}
     given_cols = spec.get("given_columns") or []
     answer_cols = spec.get("answer_columns") or []
     rows = spec.get("rows") or []
     headers = given_cols + answer_cols
 
     if not headers or not rows:
-        ui.label("(Table not configured yet.)").classes("text-sm text-grey-500 italic mt-1")
+        ui.label(empty_message).classes("text-sm text-grey-500 italic mt-1")
         return
 
     columns = []
@@ -52,22 +55,24 @@ def _render_part_table(part: dict):
         table_rows.append(row_dict)
 
     ui.table(columns=columns, rows=table_rows, row_key="_id").classes("w-full mt-1").props("dense flat bordered")
-    ui.label(
-        "Columns marked “(answer)” are left blank on the official/example "
-        "paper and filled in on the solutions export."
-    ).classes("text-xs text-grey-500 mt-1")
 
 
-def _render_part_image(part: dict):
-    """Render an "image"-type component's embedded picture and caption.
+def _render_part_image(part: dict, *, caption=None):
+    """Render an embedded image and, optionally, a caption underneath.
 
     Lets the image be seen directly on this page without opening Edit
-    (which, for a question containing one of these, is blocked anyway --
+    (which, for a question with an attached image, is blocked anyway --
     see edit_question.py).
 
     Args:
-        part: The question part dict, expected to hold "Image data" and
-            an optional "Description" caption.
+        part: The question part dict, expected to hold "Image data".
+        caption: Caption text shown underneath. If omitted (None), falls
+            back to the part's own "Description" -- correct for a legacy
+            standalone "image"-type part, where "Description" is only
+            ever used as this caption. Pass "" explicitly to suppress it
+            (used when the image is attached to a "text"/"table"
+            sub-question whose "Description" is its own text, already
+            shown above).
     """
     image_data = part.get("Image data")
     if not image_data:
@@ -75,9 +80,61 @@ def _render_part_image(part: dict):
         return
     mime = mimetypes.guess_type(part.get("Image filename") or "")[0] or "image/png"
     ui.image(f"data:{mime};base64,{image_data}").classes("max-w-md border rounded mt-1")
-    caption = part.get("Description")
+    if caption is None:
+        caption = part.get("Description")
     if caption and str(caption).strip():
         ui.label(caption).classes("text-xs text-grey-600 italic mt-1")
+
+
+def _render_part_blocks(part: dict) -> None:
+    """Render a gradable ("text"/"table") part's ordered content blocks.
+
+    Mirrors latex_export.py's block rendering (see its _render_question):
+    the first block, if it's text, is shown inline in the header line by
+    the caller (question_detail_page, right next to the label/marks), so
+    only every *other* block -- a non-first text block, an image, or a
+    table -- is rendered here, each as its own line, in order. This is
+    what makes this page's preview match the exported PDF's layout
+    instead of the old fixed "description, then image, then table" one.
+
+    Args:
+        part: The question part dict, expected to hold "Content blocks"
+            (see database.py's get_question_parts).
+    """
+    blocks = part.get("Content blocks") or []
+    first_is_text = bool(blocks) and blocks[0].get("type") == "text"
+    remaining = blocks[1:] if first_is_text else blocks
+
+    for block in remaining:
+        btype = block.get("type")
+        if btype == "text":
+            text = (block.get("text") or "").strip()
+            if text:
+                ui.label(text).classes("whitespace-pre-line mt-1")
+        elif btype == "image":
+            image_data = block.get("image_data")
+            if not image_data:
+                ui.label("(No image uploaded yet.)").classes("text-sm text-grey-500 italic mt-1")
+                continue
+            mime = mimetypes.guess_type(block.get("image_filename") or "")[0] or "image/png"
+            ui.image(f"data:{mime};base64,{image_data}").classes("max-w-md border rounded mt-1")
+        elif btype == "table":
+            ui.label("Problem table (shown to the student):").classes(
+                "text-xs font-bold text-grey-600 mt-1"
+            )
+            _render_one_table(block.get("table_spec"), empty_message="(Table not configured yet.)")
+            ui.label("Answer table (model answer, solutions export only):").classes(
+                "text-xs font-bold text-grey-600 mt-3"
+            )
+            before = (block.get("answer_text_before") or "").strip()
+            if before:
+                ui.label(before).classes("whitespace-pre-line text-sm italic mt-1")
+            _render_one_table(
+                block.get("answer_table_spec"), empty_message="(Answer table not filled in yet.)"
+            )
+            after = (block.get("answer_text_after") or "").strip()
+            if after:
+                ui.label(after).classes("whitespace-pre-line text-sm italic mt-1")
 
 
 def question_detail_page(question_id: int):
@@ -168,26 +225,84 @@ def question_detail_page(question_id: int):
                                 # "material"/"image" are stimulus content,
                                 # so they skip this header entirely and
                                 # just show their content directly below.
+                                # The header line itself shows the part's
+                                # *first* content block if it's text --
+                                # exactly like the exported PDF's
+                                # "\item[(a)] ..." line -- with every
+                                # other block (more text, an image, a
+                                # table) rendered below by
+                                # _render_part_blocks(), in order.
+                                blocks = part.get("Content blocks") or []
+                                first_text = (
+                                    blocks[0].get("text")
+                                    if blocks and blocks[0].get("type") == "text"
+                                    else ""
+                                )
                                 with ui.row().classes("w-full items-start justify-between no-wrap"):
                                     ui.label(
-                                        f"({part.get('Label')}) {part.get('Description') or ''}"
+                                        f"({part.get('Label')}) {first_text or ''}"
                                     ).classes("font-semibold flex-grow")
                                     ui.label(f"[{part.get('Marks', 0)}]").classes("text-grey-600")
 
-                            if part_type == "table":
-                                _render_part_table(part)
+                                _render_part_blocks(part)
+
+                                # A sub-problem broken down further into
+                                # (i)/(ii)/(iii)... sub-parts (see
+                                # database.py's get_question_parts) shows
+                                # each of those instead of this
+                                # sub-problem's own Answer card -- its own
+                                # marks/answer are unused once it has
+                                # sub-parts (create_question.py's
+                                # _build_part_dict already reflects that:
+                                # "Marks" is the sum of the sub-parts', and
+                                # "Answer" is None).
+                                sub_parts = part.get("Sub parts") or []
+                                if sub_parts:
+                                    with ui.column().classes(
+                                        "w-full gap-2 mt-2 pl-4 border-l-2 border-grey-300"
+                                    ):
+                                        for sub_part in sub_parts:
+                                            sub_type = sub_part.get("Part type") or "text"
+                                            sub_blocks = sub_part.get("Content blocks") or []
+                                            sub_first_text = (
+                                                sub_blocks[0].get("text")
+                                                if sub_blocks and sub_blocks[0].get("type") == "text"
+                                                else ""
+                                            )
+                                            with ui.row().classes(
+                                                "w-full items-start justify-between no-wrap"
+                                            ):
+                                                ui.label(
+                                                    f"({part.get('Label')})({sub_part.get('Label')}) "
+                                                    f"{sub_first_text or ''}"
+                                                ).classes("font-semibold flex-grow")
+                                                ui.label(f"[{sub_part.get('Marks', 0)}]").classes(
+                                                    "text-grey-600"
+                                                )
+
+                                            _render_part_blocks(sub_part)
+
+                                            if sub_type != "table":
+                                                with ui.card().classes("bg-grey-100 w-full p-3 mt-1"):
+                                                    ui.label("Answer:").classes(
+                                                        "text-xs font-bold text-grey-600"
+                                                    )
+                                                    ui.label(
+                                                        sub_part.get("Answer")
+                                                        or "(no standard answer recorded)"
+                                                    ).classes("whitespace-pre-line")
+                                elif part_type != "table":
+                                    with ui.card().classes("bg-grey-100 w-full p-3 mt-1"):
+                                        ui.label("Answer:").classes("text-xs font-bold text-grey-600")
+                                        ui.label(
+                                            part.get("Answer") or "(no standard answer recorded)"
+                                        ).classes("whitespace-pre-line")
                             elif part_type == "material":
                                 ui.label(
                                     part.get("Description") or "(This material block is empty.)"
                                 ).classes("whitespace-pre-line")
                             elif part_type == "image":
                                 _render_part_image(part)
-                            else:
-                                with ui.card().classes("bg-grey-100 w-full p-3 mt-1"):
-                                    ui.label("Answer:").classes("text-xs font-bold text-grey-600")
-                                    ui.label(
-                                        part.get("Answer") or "(no standard answer recorded)"
-                                    ).classes("whitespace-pre-line")
             else:
                 with ui.card().classes("bg-grey-100 w-full p-3 mt-1"):
                     ui.label("Answer:").classes("text-xs font-bold text-grey-600")
