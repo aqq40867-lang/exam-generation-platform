@@ -183,6 +183,34 @@ def _part_marks(part: dict) -> int:
     return int(part.get("marks") or 0)
 
 
+def _snap_marks_to_integer(e) -> bool:
+    """Force a "Marks" ``ui.number`` field back to a whole number.
+
+    ``ui.number(precision=0)`` only rounds on blur, and NiceGUI's own
+    rounding has a display quirk: it recomputes the "is this a whole
+    number" check against the field's *previous* (still-fractional)
+    displayed value, so typing e.g. "10.5" can end up showing "10.0"
+    instead of "10". Rounding here, on every change, sidesteps that --
+    marks are only ever allowed to be integers.
+
+    Args:
+        e: The ``ui.number`` value-change event.
+
+    Returns:
+        True if the field's value was fractional and has just been
+        corrected (in which case the correction re-triggers this same
+        handler with the now-integer value, so the caller should stop
+        processing this event and let that follow-up call do the work).
+    """
+    if e.value is None:
+        return False
+    rounded = int(round(e.value))
+    if rounded != e.value:
+        e.sender.set_value(rounded)
+        return True
+    return False
+
+
 def _table_spec(block: dict) -> dict:
     """Build the {"given_columns", "answer_columns", "rows"} shape for a *problem* table block.
 
@@ -1167,6 +1195,8 @@ def render_question_editor(
                                 # in-flight event still fires.
                                 if parts_data[idx].get("subparts"):
                                     return
+                                if _snap_marks_to_integer(e):
+                                    return
                                 parts_data[idx]["marks"] = e.value or 0
                                 recalc_total()
 
@@ -1234,6 +1264,8 @@ def render_question_editor(
                         def make_subpart_marks_handler(idx, si):
                             """Return a handler that updates sub-part `si`'s marks and recalculates totals."""
                             def handler(e):
+                                if _snap_marks_to_integer(e):
+                                    return
                                 parts_data[idx]["subparts"][si]["marks"] = e.value or 0
                                 _resync_part_marks(idx)
                                 recalc_total()
@@ -1609,6 +1641,8 @@ def render_question_editor(
             refresh_validation()
 
         def on_marks_change(e):
+            if _snap_marks_to_integer(e):
+                return
             refresh_validation()
 
         def on_answer_change(e):

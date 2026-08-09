@@ -11,6 +11,7 @@ import mimetypes
 from nicegui import ui, app, run
 from database import get_question, delete_question, load_questions, get_question_parts
 from latex_export import build_latex, compile_latex_to_pdf, LatexCompileError
+from pages.create_question import _cache_preview_pdf
 
 
 def _render_one_table(spec: dict, *, empty_message: str):
@@ -344,12 +345,14 @@ def question_detail_page(question_id: int):
             preview_ref = {}
 
             async def on_preview():
-                """Compile this question to a PDF and offer it for download.
+                """Compile this question to a PDF and open it inline in a new tab.
 
                 Builds a single-question "example"-mode export via
-                build_latex()/compile_latex_to_pdf(), then triggers a
-                browser download of the result, or shows a notification
-                if compilation fails.
+                build_latex()/compile_latex_to_pdf(), then opens the result
+                in a new browser tab (viewed inline via the browser's own
+                PDF viewer, same as create_question.py's "Preview PDF")
+                instead of forcing a download, or shows a notification if
+                compilation fails.
                 """
                 marks = question.get("Marks") or 0
                 # NOTE: kept in English -- this string is baked straight
@@ -376,8 +379,8 @@ def question_detail_page(question_id: int):
                     if btn is not None:
                         btn.props(remove="loading")
 
-                ui.download(pdf_bytes, filename="question_preview.pdf")
-                ui.notify("Preview generated -- check your downloads.", color="positive")
+                token = _cache_preview_pdf(pdf_bytes)
+                ui.navigate.to(f"/questions/preview.pdf?token={token}", new_tab=True)
 
             preview_ref["btn"] = ui.button(
                 "Preview PDF", on_click=on_preview, color="secondary"
