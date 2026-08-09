@@ -120,6 +120,29 @@ def _hydrate_sub_part(sub_part: dict) -> dict:
     }
 
 
+def _hydrate_main_blocks(question: dict) -> list:
+    """Convert a question's stored problem statement into the editor's live block shape.
+
+    get_question() already decodes "Main content blocks" from JSON (or,
+    for a row saved before that column existed, synthesizes a single
+    text block from the legacy flat "Main question" field -- see
+    database.py's _decode_main_blocks), so this just needs to run each
+    block through _hydrate_block() the same way a sub-problem's own
+    blocks are. Unlike a sub-problem, an empty result stays an empty
+    list rather than being padded to one placeholder block -- the
+    overall problem statement is optional.
+
+    Args:
+        question: A question dict from get_question(), with "Main
+            content blocks" already decoded to a list.
+
+    Returns:
+        A list of block dicts in the editor's live shape (possibly
+        empty).
+    """
+    return [_hydrate_block(b) for b in (question.get("Main content blocks") or [])]
+
+
 def _hydrate_part(part: dict) -> dict:
     """Convert one get_question_parts() row into a parts_data entry.
 
@@ -242,6 +265,7 @@ def edit_question_page(question_id: int):
         updated_question = {
             "Question": payload["title"],
             "Main question": payload["main_text"] or None,
+            "Main content blocks": payload["main_content_blocks"] or None,
             "Marks": payload["marks"],
             "Answer": payload["answer"] or None,
             "Status": question.get("Status", "Draft"),
@@ -279,7 +303,7 @@ def edit_question_page(question_id: int):
             "title": question.get("Question", ""),
             "module": question.get("Module") or "",
             "topic": question.get("Topic") or "",
-            "main_text": question.get("Main question") or "",
+            "main_blocks": _hydrate_main_blocks(question),
             "marks": question.get("Marks") or 1,
             "answer": question.get("Answer") or "",
             "parts_data": parts_data,

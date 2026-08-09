@@ -110,6 +110,13 @@ def init_db():
         if "Topic" not in existing_question_columns:
             with engine.begin() as conn:
                 conn.execute(text('ALTER TABLE questions ADD COLUMN "Topic" TEXT'))
+        # Migration: add "Main content blocks" to questions if this is an
+        # existing database from before the Problem section's block
+        # editor (text/image/table, same as a sub-problem's own content)
+        # existed. Same create_all()-only-creates-missing-tables caveat.
+        if "Main content blocks" not in existing_question_columns:
+            with engine.begin() as conn:
+                conn.execute(text('ALTER TABLE questions ADD COLUMN "Main content blocks" TEXT'))
 
     session = get_session()
     try:
@@ -509,7 +516,7 @@ def load_questions():
     """
     session = get_session()
     try:
-        return [_row_to_dict(q) for q in session.query(Question).all()]
+        return [_decode_main_blocks(_row_to_dict(q)) for q in session.query(Question).all()]
     finally:
         session.close()
 
@@ -526,7 +533,8 @@ def get_question(question_id: int):
     session = get_session()
     try:
         q = session.query(Question).filter(Question.id == question_id).first()
-        return _row_to_dict(q)
+        d = _row_to_dict(q)
+        return _decode_main_blocks(d) if d is not None else None
     finally:
         session.close()
 
@@ -536,18 +544,23 @@ def add_question(question: dict) -> int:
 
     Args:
         question: A dict of question fields (e.g. "Question",
-            "Main question", "Marks", "Answer", "Status", "Version",
-            "Created by", "Created at", "Usage", "Module", "Topic"),
-            keyed by the same column names used elsewhere in this file.
+            "Main question", "Main content blocks" (a list, JSON-encoded
+            here before storage -- see models.py's
+            Question.main_content_blocks), "Marks", "Answer", "Status",
+            "Version", "Created by", "Created at", "Usage", "Module",
+            "Topic"), keyed by the same column names used elsewhere in
+            this file.
 
     Returns:
         The new question's id.
     """
     session = get_session()
     try:
+        main_blocks = question.get("Main content blocks")
         q = Question(
             question=question.get("Question"),
             main_question=question.get("Main question"),
+            main_content_blocks=json.dumps(main_blocks) if main_blocks else None,
             marks=question.get("Marks"),
             answer=question.get("Answer"),
             status=question.get("Status"),
@@ -581,8 +594,10 @@ def update_question(question_id: int, updated_question: dict) -> bool:
         q = session.query(Question).filter(Question.id == question_id).first()
         if not q:
             return False
+        main_blocks = updated_question.get("Main content blocks")
         q.question = updated_question.get("Question")
         q.main_question = updated_question.get("Main question")
+        q.main_content_blocks = json.dumps(main_blocks) if main_blocks else None
         q.marks = updated_question.get("Marks")
         q.answer = updated_question.get("Answer")
         q.status = updated_question.get("Status")
@@ -864,6 +879,35 @@ def _blocks_from_legacy(part: dict) -> list:
             "answer_table_spec": part.get("Answer table spec"),
         })
     return blocks
+
+
+def _decode_main_blocks(question: dict) -> dict:
+    """Decodes a question dict's "Main content blocks" JSON in place.
+
+    Mirrors get_question_parts()'s handling of a part's "Content blocks":
+    decodes the JSON if present, otherwise synthesizes a single-block
+    equivalent from the legacy flat "Main question" text field so a row
+    saved before this feature existed still shows/edits its existing
+    problem statement instead of appearing blank. An empty list (not a
+    placeholder block) if there's truly no problem content -- unlike a
+    sub-problem, a question's overall problem statement is optional.
+
+    Args:
+        question: A question dict already run through _row_to_dict.
+
+    Returns:
+        The same dict, with "Main content blocks" replaced by its
+        decoded (or synthesized) list.
+    """
+    raw = question.get("Main content blocks")
+    if raw:
+        question["Main content blocks"] = json.loads(raw)
+    else:
+        legacy_text = (question.get("Main question") or "").strip()
+        question["Main content blocks"] = (
+            [{"type": "text", "text": legacy_text}] if legacy_text else []
+        )
+    return question
 
 
 def get_question_parts(question_id: int):

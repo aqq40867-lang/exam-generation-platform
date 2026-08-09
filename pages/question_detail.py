@@ -86,26 +86,20 @@ def _render_part_image(part: dict, *, caption=None):
         ui.label(caption).classes("text-xs text-grey-600 italic mt-1")
 
 
-def _render_part_blocks(part: dict) -> None:
-    """Render a gradable ("text"/"table") part's ordered content blocks.
+def _render_blocks(blocks: list) -> None:
+    """Render an ordered list of text/image/table content blocks.
 
-    Mirrors latex_export.py's block rendering (see its _render_question):
-    the first block, if it's text, is shown inline in the header line by
-    the caller (question_detail_page, right next to the label/marks), so
-    only every *other* block -- a non-first text block, an image, or a
-    table -- is rendered here, each as its own line, in order. This is
-    what makes this page's preview match the exported PDF's layout
-    instead of the old fixed "description, then image, then table" one.
+    Shared by _render_part_blocks() (a sub-problem's own blocks, minus
+    whichever leading one is shown inline in its header) and
+    question_detail_page() directly (the question's own "Main content
+    blocks" -- its overall problem statement, which has no header line
+    to inline a first block into).
 
     Args:
-        part: The question part dict, expected to hold "Content blocks"
-            (see database.py's get_question_parts).
+        blocks: An ordered list of content block dicts (see database.py's
+            get_question_parts() / get_question() for the shape).
     """
-    blocks = part.get("Content blocks") or []
-    first_is_text = bool(blocks) and blocks[0].get("type") == "text"
-    remaining = blocks[1:] if first_is_text else blocks
-
-    for block in remaining:
+    for block in blocks:
         btype = block.get("type")
         if btype == "text":
             text = (block.get("text") or "").strip()
@@ -135,6 +129,27 @@ def _render_part_blocks(part: dict) -> None:
             after = (block.get("answer_text_after") or "").strip()
             if after:
                 ui.label(after).classes("whitespace-pre-line text-sm italic mt-1")
+
+
+def _render_part_blocks(part: dict) -> None:
+    """Render a gradable ("text"/"table") part's ordered content blocks.
+
+    Mirrors latex_export.py's block rendering (see its _render_question):
+    the first block, if it's text, is shown inline in the header line by
+    the caller (question_detail_page, right next to the label/marks), so
+    only every *other* block -- a non-first text block, an image, or a
+    table -- is rendered here, each as its own line, in order. This is
+    what makes this page's preview match the exported PDF's layout
+    instead of the old fixed "description, then image, then table" one.
+
+    Args:
+        part: The question part dict, expected to hold "Content blocks"
+            (see database.py's get_question_parts).
+    """
+    blocks = part.get("Content blocks") or []
+    first_is_text = bool(blocks) and blocks[0].get("type") == "text"
+    remaining = blocks[1:] if first_is_text else blocks
+    _render_blocks(remaining)
 
 
 def question_detail_page(question_id: int):
@@ -208,9 +223,18 @@ def question_detail_page(question_id: int):
 
             ui.label(f"{question.get('Marks', 'N/A')} marks total").classes("text-sm text-grey-600 mb-2")
 
-            main_text = question.get("Main question")
-            if main_text and str(main_text).strip():
-                ui.label(main_text).classes("whitespace-pre-line mb-3")
+            # "Main content blocks" -- the question's overall problem
+            # statement, built from the same text/image/table block
+            # editor a sub-problem's own content uses -- is what
+            # get_question() returns here; it already falls back to a
+            # single synthesized text block from the legacy flat "Main
+            # question" field for rows saved before this feature existed
+            # (see database.py's _decode_main_blocks), so this is always
+            # the right thing to render regardless of how old the row is.
+            main_blocks = question.get("Main content blocks") or []
+            if main_blocks:
+                with ui.column().classes("w-full gap-0 mb-3"):
+                    _render_blocks(main_blocks)
 
             if parts:
                 with ui.column().classes("w-full gap-3"):

@@ -2,8 +2,10 @@
 
 The first page a teacher lands on after signing in: a grid of cards, one
 per module they're assigned to, each labelled with how many of their own
-questions already sit in that module. Picking a card sets it as the
-Question List page's initial filter and navigates there.
+questions already sit in that module. Picking a card sets it as this
+session's "current_module" -- read by the Question List page (initial
+sidebar filter) and the Create New Question page (which fixes its Module
+field to it, uneditable there) -- and navigates to the Question List.
 """
 
 from collections import Counter
@@ -73,13 +75,13 @@ def module_selection_page():
     )
 
     def select_module(code):
-        """Set the chosen module as the Question List page's initial
-        filter and navigate there.
+        """Set the chosen module as this session's current module and
+        navigate to the Question List page.
 
         Args:
             code: The module code that was clicked.
         """
-        app.storage.user["module_filter"] = code
+        app.storage.user["current_module"] = code
         ui.navigate.to("/questions")
 
     if not modules:

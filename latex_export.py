@@ -545,12 +545,14 @@ def _sniff_image_extension(data: bytes) -> str:
 
 
 def _collect_image_assets(questions_with_marks: list):
-    """Decode every part's base64 image data exactly once.
+    """Decode every question's and part's base64 image data exactly once.
 
-    An image may be attached to any part regardless of "Part type" -- a
-    "text" or "table" sub-problem can carry one alongside its own
-    content, and legacy standalone "image"-type parts still work too.
-    Each decoded image is assigned a short filesystem-safe filename.
+    An image may sit in a question's own "Main content blocks" (its
+    overall problem statement), or be attached to any part regardless of
+    "Part type" -- a "text" or "table" sub-problem can carry one
+    alongside its own content, and legacy standalone "image"-type parts
+    still work too. Each decoded image is assigned a short
+    filesystem-safe filename.
 
     Args:
         questions_with_marks: List of (question_dict, marks, parts_list)
@@ -583,7 +585,10 @@ def _collect_image_assets(questions_with_marks: list):
         assets[filename] = data
         filenames[key] = filename
 
-    for _question, _marks, parts in questions_with_marks:
+    for question, _marks, parts in questions_with_marks:
+        for block in (question.get("Main content blocks") or []):
+            if block.get("type") == "image":
+                _register(block.get("image_data"), id(block))
         for part in parts:
             _register(part.get("Image data"), id(part))
             for block in (part.get("Content blocks") or []):
@@ -734,10 +739,26 @@ def _render_question(
     )
     lines.append(_paragraphs(question.get("Question", "")))
 
-    main_context = question.get("Main question")
-    if main_context and str(main_context).strip():
+    # The overall problem statement/stimulus, shown above the lettered
+    # sub-problems (if any). "Main content blocks" -- the same ordered
+    # text/image/table block shape a sub-problem's own content uses (see
+    # models.py's Question.main_content_blocks) -- is the current
+    # representation; database.py's get_question()/load_questions()
+    # already fall back to synthesizing a single text block from the
+    # legacy flat "Main question" field when it's empty, so this is
+    # always the right thing to render regardless of how old the row is.
+    main_blocks = question.get("Main content blocks") or []
+    for block in main_blocks:
+        btype = block.get("type")
         lines.append("")
-        lines.append(_paragraphs(main_context))
+        if btype == "text":
+            text = (block.get("text") or "").strip()
+            if text:
+                lines.append(_paragraphs(text))
+        elif btype == "image":
+            lines.append(_render_image_block(block, image_filenames))
+        elif btype == "table":
+            lines.append(_render_table_block(block, mode=mode))
 
     if parts:
         lines.append("")

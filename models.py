@@ -28,6 +28,24 @@ class Question(Base):
     id = Column(Integer, primary_key=True)
     question = Column("Question", Text, nullable=False)
     main_question = Column("Main question", Text)
+    # JSON-encoded ordered list of content blocks (same {"type": "text"/
+    # "image"/"table", ...} shape as QuestionPart.content_blocks -- see
+    # that column's docstring) for the question's overall problem
+    # statement/stimulus, shown above the lettered sub-problems. Lets the
+    # Create/Edit Question pages' "2. Problem" section use the same
+    # text/image/table block editor a sub-problem's own content uses,
+    # instead of being limited to plain text. `main_question` above is
+    # still kept in sync as a best-effort plain-text summary (every text
+    # block's text, joined) purely for older code paths that only know
+    # about that flat field; this column is the source of truth for
+    # rendering once it's set. NULL for rows saved before this feature
+    # existed, or for a question with no problem statement at all (it's
+    # optional, unlike a sub-problem's own content) -- database.py's
+    # get_question()/load_questions() fall back to synthesizing a single
+    # text block from `main_question` when this is NULL but that isn't,
+    # so an old row's problem text still shows up when reopened for
+    # editing.
+    main_content_blocks = Column("Main content blocks", Text)
     marks = Column("Marks", Integer)
     answer = Column("Answer", Text)
     status = Column("Status", Text)

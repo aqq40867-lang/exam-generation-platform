@@ -37,6 +37,26 @@ _MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
 _GIVEN_BG = "#f3f4f6"
 _ANSWER_BG = "#dbeafe"
 
+
+class _FixedValue:
+    """A stand-in for a NiceGUI input when a field's value is locked.
+
+    Used for the Module field on the Create New Question page (see
+    render_question_editor()'s `fixed_module` argument): the rest of the
+    function reads a field's current value via `.value` and hooks change
+    notifications via `.on_value_change(...)`, regardless of whether that
+    field is an editable ui.select or (here) a plain read-only display --
+    this gives a fixed value the same two-member interface so none of
+    that downstream code needs to know the difference.
+    """
+
+    def __init__(self, value):
+        self.value = value
+
+    def on_value_change(self, handler):
+        """No-op: a fixed value never changes, so there's nothing to notify."""
+        pass
+
 # In-memory hand-off from a compiled question preview to the
 # /questions/preview.pdf route below, so the "Preview PDF" button can open
 # the PDF in a new browser tab (viewed inline via the browser's own PDF
@@ -361,6 +381,38 @@ def _build_part_dict(label, part: dict, *, for_preview: bool) -> dict:
         result["Answer"] = answer or ("(no standard answer yet)" if for_preview else None)
 
     return result
+
+
+def _build_main_content(main_blocks: list) -> dict:
+    """Build the question-level "Main content blocks" / "Main question" payload.
+
+    Converts the "2. Problem" section's raw in-memory block list (the
+    same shape a sub-problem's own "blocks" uses -- see
+    render_question_editor()'s docstring) into what add_question()/
+    update_question() expect: the ordered block list itself, plus a
+    best-effort plain-text summary (every text block's text, joined) kept
+    in sync on the flat legacy "Main question" column for older code
+    paths that only know about it.
+
+    Args:
+        main_blocks: The page's in-memory list of content blocks for the
+            overall problem statement (possibly empty -- unlike a
+            sub-problem, this is optional).
+
+    Returns:
+        A dict with "Content blocks" (list, empty if `main_blocks` is)
+        and "Text" (the joined plain-text summary, "" if there's no text
+        block or every one is blank).
+    """
+    # Same "drop a still-empty image placeholder" rule _build_part_dict()
+    # applies to a sub-problem's own blocks.
+    content_blocks = [
+        _block_payload(b) for b in main_blocks
+        if not (b.get("type") == "image" and not b.get("image_data"))
+    ]
+    text_bits = [(b.get("text") or "").strip() for b in main_blocks if b.get("type") == "text"]
+    text_summary = "\n\n".join(bit for bit in text_bits if bit)
+    return {"Content blocks": content_blocks, "Text": text_summary}
 
 
 def _render_block_editor(blocks: list, *, on_structural_change, on_content_change) -> None:
@@ -823,6 +875,7 @@ def render_question_editor(
     on_save,
     meta_lines: list = None,
     extra_actions: list = None,
+    fixed_module: str = None,
 ) -> None:
     """Render the shared create/edit question form.
 
@@ -859,7 +912,10 @@ def render_question_editor(
         existing_topics: This teacher's previously-used Topic labels,
             offered as Topic choices (plus free text entry).
         initial: Starting values for every field -- "title", "module",
-            "topic", "main_text", "marks", "answer" (all strings/numbers)
+            "topic", "marks", "answer" (all strings/numbers), "main_blocks"
+            (the in-memory content-block list for the overall problem
+            statement -- same shape as one sub-problem's own "blocks",
+            below; pass an empty list if there's no problem statement),
             and "parts_data" (the in-memory sub-problem list; see
             create_question_page()'s docstring for its shape -- each
             entry has "marks", "answer", "answer_space", "blocks", and
@@ -867,18 +923,28 @@ def render_question_editor(
             question.
         on_save: Called with a single payload dict once the form
             validates and Save is clicked -- {"title", "module", "topic",
-            "main_text", "marks", "answer", "parts_payload"} (the last
-            being the list of sub-problem dicts built by
-            _build_part_dict(), ready for replace_question_parts()).
-            Responsible for everything after that: the actual
-            add_question()/update_question() + replace_question_parts()
-            calls, add_teacher_topic(), notifying the user, and
-            navigating away.
+            "main_content_blocks", "main_text", "marks", "answer",
+            "parts_payload"} ("main_content_blocks"/"main_text" are the
+            two halves of _build_main_content()'s return value -- the
+            block list and its plain-text summary, ready for "Main
+            content blocks"/"Main question"; "parts_payload" is the list
+            of sub-problem dicts built by _build_part_dict(), ready for
+            replace_question_parts()). Responsible for everything after
+            that: the actual add_question()/update_question() +
+            replace_question_parts() calls, add_teacher_topic(),
+            notifying the user, and navigating away.
         meta_lines: Optional list of read-only text lines shown near the
             bottom of the form (e.g. ["Status: Draft", "Version: 2"]).
         extra_actions: Optional list of (label, on_click) tuples for
             extra buttons shown alongside Save/Cancel (e.g. a "View
             Question" button on the edit page).
+        fixed_module: If given, the Module field is rendered as a
+            read-only chip showing this code instead of an editable
+            select -- used by create_question_page() so a question is
+            always created under whatever module the teacher picked on
+            the Module Selection page, with no way to change it here.
+            None (the default) keeps Module an editable select, as
+            edit_question.py still uses.
     """
 
     parts_data = list(initial.get("parts_data") or [])
@@ -910,27 +976,42 @@ def render_question_editor(
             title_error_label = ui.label("").classes("text-xs text-red-600 mb-2")
 
             ui.label("Module").classes("font-semibold mt-1")
-            # Keep the form's starting module selectable even if it's not
-            # (or no longer) part of this teacher's assigned list -- e.g.
-            # editing a question whose module an admin has since
-            # unassigned -- so opening the form never silently drops it.
-            existing_module = (initial.get("module") or "").strip()
-            module_options = list(assigned_modules)
-            if existing_module and existing_module not in module_options:
-                module_options.append(existing_module)
-
-            if module_options:
-                module_input = ui.select(
-                    module_options, value=existing_module or None, label=""
-                ).classes("w-full mb-1").mark("module_select")
+            if fixed_module:
+                # Locked to whatever module the teacher picked on the
+                # Module Selection page -- no select control here at all,
+                # so a question can't accidentally be created under the
+                # wrong module. "Change module" sends them back to pick a
+                # different one (which then applies to their *next* new
+                # question, not this in-progress form).
+                with ui.row().classes("items-center gap-2 mb-1"):
+                    ui.chip(
+                        fixed_module, icon="school", color="primary", text_color="white"
+                    ).props("dense").mark("module_select")
+                    ui.link("Change module", "/modules").classes("text-xs")
+                module_input = _FixedValue(fixed_module)
             else:
-                module_input = (
-                    ui.select([], label="").classes("w-full mb-1").props("disable").mark("module_select")
-                )
-                ui.label(
-                    "You haven't been assigned any modules yet. Contact your admin "
-                    "to get one assigned before selecting."
-                ).classes("text-sm text-negative mb-1")
+                # Keep the form's starting module selectable even if it's
+                # not (or no longer) part of this teacher's assigned list
+                # -- e.g. editing a question whose module an admin has
+                # since unassigned -- so opening the form never silently
+                # drops it.
+                existing_module = (initial.get("module") or "").strip()
+                module_options = list(assigned_modules)
+                if existing_module and existing_module not in module_options:
+                    module_options.append(existing_module)
+
+                if module_options:
+                    module_input = ui.select(
+                        module_options, value=existing_module or None, label=""
+                    ).classes("w-full mb-1").mark("module_select")
+                else:
+                    module_input = (
+                        ui.select([], label="").classes("w-full mb-1").props("disable").mark("module_select")
+                    )
+                    ui.label(
+                        "You haven't been assigned any modules yet. Contact your admin "
+                        "to get one assigned before selecting."
+                    ).classes("text-sm text-negative mb-1")
 
             ui.label("Topic / Knowledge Point").classes("font-semibold mt-1")
             # Select-or-add: pick one of this teacher's own previously-used
@@ -961,20 +1042,40 @@ def render_question_editor(
             ).classes("text-xs text-grey-500 mb-1")
 
         # ------------------------------------------------------------
-        # 2. Problem
+        # 2. Problem -- overall problem statement (optional, same block
+        # editor a sub-problem's own content uses) plus the sub-problems
+        # themselves, merged into one section since the latter builds
+        # directly on the former.
         # ------------------------------------------------------------
         with ui.card().classes("w-full p-6"):
             ui.label("2. Problem").classes("text-lg font-bold mb-1")
-            main_text_input = ui.textarea(
-                value=initial.get("main_text") or "",
-                placeholder="Optional -- leave blank if this question doesn't need one"
-            ).classes("w-full").props("rows=3")
+            ui.label(
+                "Optional overall problem statement/stimulus, shown above the "
+                "sub-problems below. Build it from text, an image, and/or a "
+                "table -- in any combination -- exactly like a sub-problem's "
+                "own content; leave it empty if this question doesn't need one."
+            ).classes("text-sm text-grey-600 mb-2")
 
-        # ------------------------------------------------------------
-        # 3. Sub-problems
-        # ------------------------------------------------------------
-        with ui.card().classes("w-full p-6"):
-            ui.label("3. Sub-problems").classes("text-lg font-bold mb-1")
+            main_blocks = list(initial.get("main_blocks") or [])
+            main_blocks_container = ui.column().classes("w-full gap-2")
+
+            def render_main_blocks():
+                """Redraw the overall problem statement's block editor from main_blocks."""
+                main_blocks_container.clear()
+                with main_blocks_container:
+                    if not main_blocks:
+                        ui.label(
+                            "No problem content yet -- optional; add text, an "
+                            "image, and/or a table below if this question needs one."
+                        ).classes("text-sm text-grey-500 italic mb-1")
+                    _render_block_editor(
+                        main_blocks,
+                        on_structural_change=lambda: (render_main_blocks(), refresh_validation()),
+                        on_content_change=refresh_validation,
+                    )
+
+            ui.separator().classes("my-4")
+            ui.label("Sub-problems").classes("text-md font-bold mb-1")
             ui.label(
                 "Build this question from sub-problems (a), (b), (c)... Each one "
                 "always has its own description and marks; optionally attach an "
@@ -1364,10 +1465,10 @@ def render_question_editor(
             total_label = ui.label("").classes("text-sm font-semibold mt-2")
 
         # ------------------------------------------------------------
-        # 4. marks + overall answer (only relevant without sub-problems)
+        # 3. marks + overall answer (only relevant without sub-problems)
         # ------------------------------------------------------------
         with ui.card().classes("w-full p-6"):
-            ui.label("4. Marks & Answer (used when there are no sub-problems)").classes("text-lg font-bold mb-3")
+            ui.label("3. Marks & Answer (used when there are no sub-problems)").classes("text-lg font-bold mb-3")
 
             ui.label("Marks").classes("font-semibold")
             marks_input = ui.number(
@@ -1411,6 +1512,17 @@ def render_question_editor(
                 errors.append("Question title is required")
             if assigned_modules and not module_input.value:
                 errors.append("Please select a module")
+
+            # The overall problem statement is optional, but any table
+            # block it does have must still be complete -- same rule a
+            # sub-problem's own table blocks follow below.
+            main_table_blocks = [b for b in main_blocks if b.get("type") == "table"]
+            for tb in main_table_blocks:
+                spec = _table_spec(tb)
+                if not spec["answer_columns"]:
+                    errors.append("Problem's table needs at least one answer column")
+                if not spec["rows"]:
+                    errors.append("Problem's table needs at least one row of data")
 
             if parts_data:
                 labels = _labels_for(parts_data)
@@ -1528,7 +1640,7 @@ def render_question_editor(
                     ui.notify("Please fill in the title before previewing.", color="warning")
                     return
 
-                main_text = (main_text_input.value or "").strip()
+                main_content = _build_main_content(main_blocks)
                 module = (module_input.value or "").strip().upper() if module_input.value else ""
 
                 if parts_data:
@@ -1544,7 +1656,8 @@ def render_question_editor(
 
                 question_dict = {
                     "Question": title,
-                    "Main question": main_text or None,
+                    "Main question": main_content["Text"] or None,
+                    "Main content blocks": main_content["Content blocks"],
                     "Module": module or None,
                 }
 
@@ -1599,7 +1712,7 @@ def render_question_editor(
                 title = (title_input.value or "").strip()
                 module = (module_input.value or "").strip().upper()
                 topic = (topic_input.value or "").strip()
-                main_text = (main_text_input.value or "").strip()
+                main_content = _build_main_content(main_blocks)
                 answer = (answer_input.value or "").strip()
 
                 if not title:
@@ -1646,7 +1759,8 @@ def render_question_editor(
                     "title": title,
                     "module": module,
                     "topic": topic,
-                    "main_text": main_text,
+                    "main_content_blocks": main_content["Content blocks"],
+                    "main_text": main_content["Text"],
                     "marks": marks,
                     "answer": answer,
                     "parts_payload": parts_payload,
@@ -1666,13 +1780,14 @@ def render_question_editor(
                 for action_label, action_handler in extra_actions:
                     ui.button(action_label, on_click=action_handler)
 
-        # Initial paint: render any pre-existing sub-problems (otherwise
-        # parts_container stays empty until "+ Add sub-problem" is first
-        # clicked, hiding a question's existing sub-problems when editing
-        # it), then validate/lock according to the starting values (any
-        # pre-existing sub-problems lock+auto-calculate Marks and hide the
-        # overall Answer section); Save starts disabled until the required
-        # fields above are filled in.
+        # Initial paint: render any pre-existing problem-statement blocks
+        # and sub-problems (otherwise their containers stay empty until
+        # first edited, hiding a question's existing content when
+        # editing it), then validate/lock according to the starting
+        # values (any pre-existing sub-problems lock+auto-calculate
+        # Marks and hide the overall Answer section); Save starts
+        # disabled until the required fields above are filled in.
+        render_main_blocks()
         render_parts()
         recalc_total()
 
@@ -1685,6 +1800,12 @@ def create_question_page():
     question via database.add_question / replace_question_parts. See
     render_question_editor()'s docstring for what the shared form itself
     supports.
+
+    The Module field is not chosen here -- it's fixed to whatever module
+    the teacher last picked on the Module Selection page
+    (app.storage.user["current_module"]; see module_selection.py). If
+    they haven't picked one yet this session, they're sent there first
+    instead of seeing a form with no module to save under.
     """
 
     # Check login
@@ -1696,11 +1817,18 @@ def create_question_page():
     assigned_modules = get_teacher_modules(username)
     existing_topics = list_teacher_topics(username)
 
+    current_module = app.storage.user.get("current_module")
+    if not current_module or current_module not in assigned_modules:
+        ui.notify("Please select a module first.", color="warning")
+        ui.navigate.to("/modules")
+        return
+
     def on_save(payload):
         """Persist a brand-new question from the validated form payload."""
         new_question = {
             "Question": payload["title"],
             "Main question": payload["main_text"] or None,
+            "Main content blocks": payload["main_content_blocks"] or None,
             "Marks": payload["marks"],
             "Answer": payload["answer"] or None,
             "Status": "Draft",
@@ -1733,12 +1861,13 @@ def create_question_page():
         existing_topics=existing_topics,
         initial={
             "title": "",
-            "module": "",
+            "module": current_module,
             "topic": "",
-            "main_text": "",
+            "main_blocks": [],
             "marks": 1,
             "answer": "",
             "parts_data": [],
         },
         on_save=on_save,
+        fixed_module=current_module,
     )
