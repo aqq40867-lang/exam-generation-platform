@@ -915,12 +915,16 @@ def get_question_parts(question_id: int):
 
     Each dict includes "Part type" ("text", "table", or the legacy
     "material"/"image") and, for "table" parts, "Table spec" (the
-    *problem* table -- what the student sees) and "Answer table spec"
-    (the *answer* table, shown only on the solutions export) -- both
-    decoded back from JSON into a plain dict/list structure (see
-    replace_question_parts' docstring for the shape). Both are None for
-    "text" parts. Legacy "material"/"image" parts have "Label" as None
-    (they aren't lettered sub-questions) and "Marks" forced to 0.
+    *problem* table -- what the student sees), decoded back from JSON
+    into a plain dict/list structure (see replace_question_parts'
+    docstring for the shape); None for "text" parts. A "table" part's
+    standard answer lives in "Answer", free text, same as "text" parts.
+    (A row saved before the table-answer grid was removed may still
+    carry a now-legacy "Answer table spec" -- also decoded here for
+    backward compatibility, but no longer written by
+    replace_question_parts, and not rendered anywhere new.) Legacy
+    "material"/"image" parts have "Label" as None (they aren't lettered
+    sub-questions) and "Marks" forced to 0.
 
     Each dict also includes "Content blocks" -- the ordered list of
     content blocks (text/image/table, in whatever order the teacher
@@ -987,27 +991,25 @@ def replace_question_parts(question_id: int, parts: list) -> int:
                       much blank space to reserve on the exported paper;
                       'full' forces a page break) all apply as before.
 
-        "table"    -- a gradable step-by-step/tracing sub-question. Its
-                      answer lives in a table, not free text, so "Answer"
-                      is unused. "Marks" applies; "Table spec" (the
-                      *problem* table, what the student sees) and
-                      "Answer table spec" (the *answer* table, filled in
-                      with the correct values) are each a plain dict
+        "table"    -- a gradable step-by-step/tracing sub-question. "Marks"
+                      and "Answer" (its standard answer, free text -- just
+                      like "text") both apply as before; "Table spec" is
+                      the *problem* table the student sees, a plain dict
                       shaped like:
                           {
                               "given_columns": ["Step", "Edge", "Weight"],
                               "answer_columns": ["Taken?", "Current MST edges"],
                               "rows": [["1", "P-R", "3", "Yes", "P-R"], ...],
                           }
-                      These are two independent tables (not one table with
-                      masked columns): "Table spec" is rendered as-is on
-                      the official/example paper -- whatever the teacher
-                      left blank stays blank -- and "Answer table spec" is
-                      rendered instead, in full, only on the solutions
-                      export. Each row must have len(given_columns) +
-                      len(answer_columns) entries, given values first.
-                      Both are JSON-encoded before storage (a Postgres
-                      Text column, no native JSON column needed).
+                      rendered as-is on every export -- whatever the
+                      teacher left blank stays blank -- with the model
+                      answer for the whole sub-question living in "Answer"
+                      rather than a second mirrored table. JSON-encoded
+                      before storage (a Postgres Text column, no native
+                      JSON column needed). (An older row may still carry a
+                      legacy "Answer table spec" from before the
+                      table-answer grid was removed -- still readable via
+                      get_question_parts(), but no longer written here.)
 
     Any part, regardless of "Part type", may also carry "Image data" (raw
     image bytes, base64-encoded) and "Image filename" (the original
@@ -1103,7 +1105,7 @@ def replace_question_parts(question_id: int, parts: list) -> int:
                 order_index=order,
                 description=part.get("Description"),
                 marks=marks,
-                answer=part.get("Answer") if part_type == "text" else None,
+                answer=part.get("Answer") if part_type in ("text", "table") else None,
                 answer_space=answer_space if answer_space in ("half", "full") else "half",
                 part_type=part_type,
                 table_spec=json.dumps(table_spec) if (part_type == "table" and table_spec) else None,

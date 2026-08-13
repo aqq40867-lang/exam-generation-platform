@@ -35,14 +35,18 @@ from datetime import datetime
 def _hydrate_block(block: dict) -> dict:
     """Convert one stored content block into the editor's live block shape.
 
-    get_question_parts() returns each "table" block with its problem/
-    answer tables nested under "table_spec"/"answer_table_spec" (see
-    models.py's QuestionPart.content_blocks); create_question.py's
-    _render_block_editor instead expects a table block with those two
-    tables' columns/rows flattened directly onto the block dict
-    ("given_columns", "answer_columns", "rows", "answer_rows") so its
-    handlers can mutate them in place. "text" and "image" blocks already
-    match shape as-is.
+    get_question_parts() returns each "table" block with its problem
+    table nested under "table_spec" (see models.py's
+    QuestionPart.content_blocks); create_question.py's
+    _render_block_editor instead expects a table block with those
+    columns/rows flattened directly onto the block dict ("given_columns",
+    "answer_columns", "rows") so its handlers can mutate them in place.
+    "text" and "image" blocks already match shape as-is. A legacy row may
+    still carry an old "answer_table_spec" (and "answer_text_before"/
+    "answer_text_after") from before the table-answer grid was removed --
+    those are simply dropped here; the table's standard answer now lives
+    entirely in its owning sub-problem's own free-text "Answer" field
+    (see _hydrate_part below).
 
     Args:
         block: One block dict as returned in a part's "Content blocks"
@@ -56,15 +60,11 @@ def _hydrate_block(block: dict) -> dict:
 
     if btype == "table":
         spec = block.get("table_spec") or {}
-        answer_spec = block.get("answer_table_spec") or {}
         return {
             "type": "table",
             "given_columns": list(spec.get("given_columns") or []),
             "answer_columns": list(spec.get("answer_columns") or []),
             "rows": [list(r) for r in (spec.get("rows") or [])],
-            "answer_rows": [list(r) for r in (answer_spec.get("rows") or [])],
-            "answer_text_before": block.get("answer_text_before") or "",
-            "answer_text_after": block.get("answer_text_after") or "",
         }
 
     if btype == "image":

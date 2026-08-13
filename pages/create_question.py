@@ -3,14 +3,16 @@
 Renders the "Create New Question" form, built around an ordered list of
 *sub-problems* -- (a), (b), (c)... -- that a teacher assembles freely. Every
 sub-problem always has marks and, on top of that, an ordered list of
-*content blocks* -- text, image, and table (problem table + auto-mirrored
-answer table) -- freely added, removed, and reordered, so a sub-problem's
-text and its diagram/table can be interleaved in whatever order the actual
-question needs (e.g. instructions, then a diagram, then more instructions,
-then a tracing table) instead of always "all the text, then the image, then
-the table". Handles client-side validation, PDF preview generation via
-latex_export, and persisting the finished question with
-database.add_question / replace_question_parts.
+*content blocks* -- text, image, and table (just the problem table the
+student sees; the standard answer is always free text, entered in the same
+"Standard answer" field a text-only sub-problem uses) -- freely added,
+removed, and reordered, so a sub-problem's text and its diagram/table can
+be interleaved in whatever order the actual question needs (e.g.
+instructions, then a diagram, then more instructions, then a tracing
+table) instead of always "all the text, then the image, then the table".
+Handles client-side validation, PDF preview generation via latex_export,
+and persisting the finished question with database.add_question /
+replace_question_parts.
 """
 
 import base64
@@ -238,43 +240,6 @@ def _table_spec(block: dict) -> dict:
     }
 
 
-def _answer_table_spec(block: dict) -> dict:
-    """Build the {"given_columns", "answer_columns", "rows"} shape for a *answer* table block.
-
-    Structurally this always mirrors the problem table -- same headers,
-    same row count, kept in sync by the table editor's add/remove
-    column/row handlers -- so a teacher never has to rebuild the table
-    twice. Cell *values* are fully independent of the problem table
-    though (every cell here, given-column or answer-column, is its own
-    freely-editable input in "answer_rows" -- see the table editor's
-    cell handlers): the problem table's given-column values are only
-    ever copied in as an initial convenience (when a row/column is first
-    added, or via the explicit "Copy from problem table" button), never
-    forced or re-synced afterwards, so editing one table never silently
-    overwrites something already typed into the other.
-
-    Args:
-        block: The raw in-memory state dict for one "table" content block.
-
-    Returns:
-        A dict with "given_columns", "answer_columns", and "rows" keys,
-        matching what database.py's replace_question_parts / latex_export.py's
-        table renderer expect as an "answer_table_spec".
-    """
-    given_cols = list(block.get("given_columns") or [])
-    answer_cols = list(block.get("answer_columns") or [])
-    n = len(given_cols) + len(answer_cols)
-    problem_rows = block.get("rows") or []
-    answer_rows = block.get("answer_rows") or []
-
-    rows = []
-    for r in range(len(problem_rows)):
-        arow = answer_rows[r] if r < len(answer_rows) else []
-        rows.append([arow[c] if c < len(arow) else "" for c in range(n)])
-
-    return {"given_columns": given_cols, "answer_columns": answer_cols, "rows": rows}
-
-
 def _block_payload(block: dict) -> dict:
     """Build the JSON-able dict shape for one content block, as stored in "Content blocks".
 
@@ -285,14 +250,11 @@ def _block_payload(block: dict) -> dict:
     Returns:
         A plain dict with a "type" key ("text"/"image"/"table") plus that
         type's own fields -- "text" for a text block; "image_data"/
-        "image_filename" for an image block; "table_spec"/
-        "answer_table_spec" for a table block (see _table_spec() /
-        _answer_table_spec()), plus that table block's optional
-        "answer_text_before"/"answer_text_after" -- free text rendered
-        immediately before/after the answer table, but only in the
-        "solutions" export (see latex_export.py's _render_question) --
-        e.g. "Solution: sorted edges: ..." before the table and
-        "Final MST total weight: 19" after it.
+        "image_filename" for an image block; "table_spec" (see
+        _table_spec()) for a table block -- just the problem table the
+        student sees. A table block's standard answer is always free
+        text, carried on its owning sub-problem's own "Answer" field
+        (see _build_part_dict()), exactly like a text-only sub-problem's.
     """
     btype = block.get("type")
     if btype == "text":
@@ -307,9 +269,6 @@ def _block_payload(block: dict) -> dict:
         return {
             "type": "table",
             "table_spec": _table_spec(block),
-            "answer_table_spec": _answer_table_spec(block),
-            "answer_text_before": (block.get("answer_text_before") or "").strip(),
-            "answer_text_after": (block.get("answer_text_after") or "").strip(),
         }
     return {"type": btype}
 
@@ -327,7 +286,8 @@ def _build_part_dict(label, part: dict, *, for_preview: bool) -> dict:
     best-effort single-value summaries derived from those blocks --
     "Description" (every text block's text, joined), "Image data" /
     "Image filename" (the first image block with an uploaded file), and
-    "Table spec" / "Answer table spec" (the first table block).
+    "Table spec" (the first table block -- just the problem table the
+    student sees).
 
     Recursive: if `part` carries any "subparts" -- the third numbering
     level, (i)/(ii)/(iii)... nested inside this (a)/(b)/(c)... sub-
@@ -339,6 +299,9 @@ def _build_part_dict(label, part: dict, *, for_preview: bool) -> dict:
     of its sub-problems'), and "Answer" is left unused (None) -- each
     sub-part carries its own instead, just like this function's caller
     treats a question's own "Answer" as unused once it has sub-problems.
+    Otherwise "Answer" is always this sub-problem's own free-text standard
+    answer, whether or not it also carries a table block -- a table's
+    rows are only ever the *problem* the student sees, never the answer.
 
     Args:
         label: This sub-problem's precomputed letter (from _labels_for()),
@@ -354,8 +317,7 @@ def _build_part_dict(label, part: dict, *, for_preview: bool) -> dict:
         A dict with the keys expected by build_latex() /
         replace_question_parts() ("Label", "Content blocks",
         "Description", "Marks", "Answer space", "Part type", "Table
-        spec", "Answer table spec", "Answer", "Image data", "Image
-        filename", "Sub parts").
+        spec", "Answer", "Image data", "Image filename", "Sub parts").
     """
     blocks = part.get("blocks") or []
     subparts = part.get("subparts") or []
@@ -397,14 +359,13 @@ def _build_part_dict(label, part: dict, *, for_preview: bool) -> dict:
         "Answer space": part.get("answer_space") or "half",
         "Part type": "table" if has_table else "text",
         "Table spec": _table_spec(first_table) if first_table else None,
-        "Answer table spec": _answer_table_spec(first_table) if first_table else None,
         "Answer": None,
         "Image data": first_image.get("image_data") if first_image else None,
         "Image filename": first_image.get("image_filename") if first_image else None,
         "Sub parts": sub_dicts,
     }
 
-    if not has_subparts and not has_table:
+    if not has_subparts:
         answer = (part.get("answer") or "").strip()
         result["Answer"] = answer or ("(no standard answer yet)" if for_preview else None)
 
@@ -482,9 +443,6 @@ def _render_block_editor(blocks: list, *, on_structural_change, on_content_chang
                 new_block["given_columns"] = ["Given 1"]
                 new_block["answer_columns"] = ["Answer 1"]
                 new_block["rows"] = [["", ""]]
-                new_block["answer_rows"] = [["", ""]]
-                new_block["answer_text_before"] = ""
-                new_block["answer_text_after"] = ""
             blocks.append(new_block)
             on_structural_change()
 
@@ -516,14 +474,6 @@ def _render_block_editor(blocks: list, *, on_structural_change, on_content_chang
 
         return handler
 
-    def make_answer_text_handler(bi, key):
-        """Return a handler that updates block `bi`'s "answer_text_before" or "answer_text_after"."""
-        def handler(e):
-            blocks[bi][key] = e.value
-            on_content_change()
-
-        return handler
-
     def make_image_upload_handler(bi):
         """Return a handler that stores an uploaded image on block `bi`."""
         async def handler(e):
@@ -537,15 +487,12 @@ def _render_block_editor(blocks: list, *, on_structural_change, on_content_chang
 
         return handler
 
-    def make_rename_col_handler(bi, group, col_i, header_mirror_refs):
+    def make_rename_col_handler(bi, group, col_i):
         """Return a handler that renames given/answer column `col_i` of block `bi`."""
         key = "given_columns" if group == "given" else "answer_columns"
 
         def handler(e):
             blocks[bi][key][col_i] = e.value
-            mirror = header_mirror_refs.get((group, col_i))
-            if mirror is not None:
-                mirror.text = (e.value or "").strip()
             on_content_change()
 
         return handler
@@ -558,39 +505,6 @@ def _render_block_editor(blocks: list, *, on_structural_change, on_content_chang
 
         return handler
 
-    def make_answer_cell_handler(bi, row_i, col_i):
-        """Return a handler that updates one cell of block `bi`'s *answer* table."""
-        def handler(e):
-            rows = blocks[bi]["answer_rows"]
-            while len(rows) <= row_i:
-                rows.append([])
-            row = rows[row_i]
-            while len(row) <= col_i:
-                row.append("")
-            row[col_i] = e.value
-            on_content_change()
-
-        return handler
-
-    def make_copy_given_handler(bi):
-        """Return a handler that copies block `bi`'s problem-table given-column values into its answer table."""
-        def handler():
-            block = blocks[bi]
-            n_given = len(block.get("given_columns") or [])
-            problem_rows = block.get("rows") or []
-            answer_rows = block.setdefault("answer_rows", [])
-            while len(answer_rows) < len(problem_rows):
-                answer_rows.append([])
-            for r, prow in enumerate(problem_rows):
-                arow = answer_rows[r]
-                for c in range(n_given):
-                    while len(arow) <= c:
-                        arow.append("")
-                    arow[c] = prow[c] if c < len(prow) else ""
-            on_structural_change()
-
-        return handler
-
     def make_add_col_handler(bi, group):
         """Return a handler that appends a new given/answer column to block `bi`'s table."""
         def handler():
@@ -598,19 +512,14 @@ def _render_block_editor(blocks: list, *, on_structural_change, on_content_chang
             given = block.setdefault("given_columns", [])
             answer = block.setdefault("answer_columns", [])
             problem_rows = block.setdefault("rows", [])
-            answer_rows = block.setdefault("answer_rows", [])
             if group == "given":
                 boundary = len(given)
                 given.append("")
                 for row in problem_rows:
                     row.insert(boundary, "")
-                for row in answer_rows:
-                    row.insert(boundary, "")
             else:
                 answer.append("")
                 for row in problem_rows:
-                    row.append("")
-                for row in answer_rows:
                     row.append("")
             on_structural_change()
 
@@ -631,34 +540,27 @@ def _render_block_editor(blocks: list, *, on_structural_change, on_content_chang
             for row in block.get("rows", []):
                 if real_i < len(row):
                     row.pop(real_i)
-            for row in block.get("answer_rows", []):
-                if real_i < len(row):
-                    row.pop(real_i)
             on_structural_change()
 
         return handler
 
     def make_add_row_handler(bi):
-        """Return a handler that appends a new, blank row to block `bi`'s table (both problem and answer)."""
+        """Return a handler that appends a new, blank row to block `bi`'s table."""
         def handler():
             block = blocks[bi]
             total = len(block.get("given_columns", [])) + len(block.get("answer_columns", []))
             block.setdefault("rows", []).append([""] * total)
-            block.setdefault("answer_rows", []).append([""] * total)
             on_structural_change()
 
         return handler
 
     def make_remove_row_handler(bi, row_i):
-        """Return a handler that deletes row `row_i` from block `bi`'s table (both problem and answer)."""
+        """Return a handler that deletes row `row_i` from block `bi`'s table."""
         def handler():
             block = blocks[bi]
             problem_rows = block.get("rows", [])
-            answer_rows = block.get("answer_rows", [])
             if row_i < len(problem_rows):
                 problem_rows.pop(row_i)
-            if row_i < len(answer_rows):
-                answer_rows.pop(row_i)
             on_structural_change()
 
         return handler
@@ -722,9 +624,7 @@ def _render_block_editor(blocks: list, *, on_structural_change, on_content_chang
                 given_cols = block.get("given_columns") or []
                 answer_cols = block.get("answer_columns") or []
                 problem_rows = block.get("rows") or []
-                answer_rows = block.get("answer_rows") or []
                 total_cols = len(given_cols) + len(answer_cols)
-                header_mirror_refs = {}  # (group, col_i) -> answer-table's header label
 
                 ui.label(
                     "Problem table -- what the student sees. Leave a cell "
@@ -743,9 +643,7 @@ def _render_block_editor(blocks: list, *, on_structural_change, on_content_chang
                                 ui.input(
                                     value=name,
                                     placeholder=f"Given {gi + 1}",
-                                    on_change=make_rename_col_handler(
-                                        bi, "given", gi, header_mirror_refs
-                                    ),
+                                    on_change=make_rename_col_handler(bi, "given", gi),
                                 ).props("dense outlined").style(
                                     f"background:{_GIVEN_BG}"
                                 ).classes("w-full")
@@ -759,9 +657,7 @@ def _render_block_editor(blocks: list, *, on_structural_change, on_content_chang
                                 ui.input(
                                     value=name,
                                     placeholder=f"Answer {ai + 1}",
-                                    on_change=make_rename_col_handler(
-                                        bi, "answer", ai, header_mirror_refs
-                                    ),
+                                    on_change=make_rename_col_handler(bi, "answer", ai),
                                 ).props("dense outlined").style(
                                     f"background:{_ANSWER_BG}"
                                 ).classes("w-full")
@@ -808,72 +704,11 @@ def _render_block_editor(blocks: list, *, on_structural_change, on_content_chang
                         on_click=make_add_row_handler(bi),
                     ).props("outline dense size=sm")
 
-                with ui.row().classes("w-full items-center justify-between mt-3"):
-                    ui.label(
-                        "Answer table -- the model answer. Headers and row "
-                        "count always match the problem table above; every "
-                        "cell here is independently editable."
-                    ).classes("text-xs font-semibold text-grey-600")
-                    ui.button(
-                        "Copy given values from problem table",
-                        icon="content_copy",
-                        on_click=make_copy_given_handler(bi),
-                    ).props("outline dense size=sm")
-
-                ui.textarea(
-                    label="Solution text before the answer table (optional)",
-                    placeholder='e.g. "Solution: sorted edges: (A,C:2), (C,D:3), ..."',
-                    value=block.get("answer_text_before", ""),
-                    on_change=make_answer_text_handler(bi, "answer_text_before"),
-                ).classes("w-full mt-2").props("rows=2 dense outlined")
-
-                if total_cols:
-                    grid_style = (
-                        f"display:grid; grid-template-columns: "
-                        f"repeat({total_cols}, minmax(90px, 1fr)); "
-                        "gap:6px; align-items:center;"
-                    )
-                    with ui.element("div").style(grid_style).classes("w-full mt-1"):
-                        for gi, name in enumerate(given_cols):
-                            mirror_label = ui.label(
-                                (name or "").strip()
-                            ).classes("text-sm font-semibold rounded").style(
-                                f"background:{_GIVEN_BG}; padding:8px 10px; "
-                                "border:1px solid #cbd5e1;"
-                            )
-                            header_mirror_refs[("given", gi)] = mirror_label
-                        for ai, name in enumerate(answer_cols):
-                            mirror_label = ui.label(
-                                (name or "").strip()
-                            ).classes("text-sm font-semibold rounded").style(
-                                f"background:{_ANSWER_BG}; padding:8px 10px; "
-                                "border:1px solid #93c5fd;"
-                            )
-                            header_mirror_refs[("answer", ai)] = mirror_label
-
-                        for ri in range(len(problem_rows)):
-                            arow = answer_rows[ri] if ri < len(answer_rows) else []
-                            for ci in range(total_cols):
-                                is_given = ci < len(given_cols)
-                                ui.input(
-                                    value=arow[ci] if ci < len(arow) else "",
-                                    on_change=make_answer_cell_handler(bi, ri, ci),
-                                ).props("dense outlined").style(
-                                    f"background:{_GIVEN_BG if is_given else _ANSWER_BG}"
-                                ).classes("w-full")
-
-                ui.textarea(
-                    label="Solution text after the answer table (optional)",
-                    placeholder='e.g. "Final MST total weight: 2+3+4+4+6 = 19"',
-                    value=block.get("answer_text_after", ""),
-                    on_change=make_answer_text_handler(bi, "answer_text_after"),
-                ).classes("w-full mt-2").props("rows=2 dense outlined")
-
                 ui.label(
-                    "Both solution-text fields above appear only in the "
-                    "\"Solutions\" export, immediately before/after the "
-                    "answer table -- students never see them."
-                ).classes("text-xs text-grey-500 italic mt-1")
+                    "This table's standard answer is entered as free text, "
+                    "in the \"Standard answer\" field for this sub-problem "
+                    "below -- not as a second table."
+                ).classes("text-xs text-grey-500 italic mt-2")
 
     with ui.row().classes("gap-2 mt-1"):
         ui.button(
@@ -1318,12 +1153,11 @@ def render_question_editor(
                                 sp_table_blocks = [b for b in sp_blocks if b.get("type") == "table"]
                                 if not (sp.get("marks") or 0) > 0:
                                     incomplete = True
-                                if sp_table_blocks:
-                                    for tb in sp_table_blocks:
-                                        spec = _table_spec(tb)
-                                        if not spec["answer_columns"] or not spec["rows"]:
-                                            incomplete = True
-                                elif not (sp.get("answer") or "").strip():
+                                for tb in sp_table_blocks:
+                                    spec = _table_spec(tb)
+                                    if not spec["answer_columns"] or not spec["rows"]:
+                                        incomplete = True
+                                if not (sp.get("answer") or "").strip():
                                     incomplete = True
                         else:
                             incomplete = (part.get("marks") or 0) <= 0
@@ -1334,7 +1168,7 @@ def render_question_editor(
                                     spec = _table_spec(tb)
                                     if not spec["answer_columns"] or not spec["rows"]:
                                         incomplete = True
-                            elif not (part.get("answer") or "").strip():
+                            if not (part.get("answer") or "").strip():
                                 incomplete = True
                         if incomplete:
                             header += "  ⚠ Incomplete"
@@ -1392,7 +1226,7 @@ def render_question_editor(
                                     on_content_change=refresh_validation,
                                 )
 
-                                if not has_table and not subparts:
+                                if not subparts:
                                     ui.textarea(
                                         label="Standard answer",
                                         placeholder="The standard answer for this sub-problem",
@@ -1461,13 +1295,12 @@ def render_question_editor(
                                                     on_content_change=refresh_validation,
                                                 )
 
-                                            if not sub_has_table:
-                                                ui.textarea(
-                                                    label="Standard answer",
-                                                    placeholder="The standard answer for this sub-part",
-                                                    value=subpart.get("answer", ""),
-                                                    on_change=make_subpart_answer_handler(i, si),
-                                                ).classes("w-full mt-1")
+                                            ui.textarea(
+                                                label="Standard answer",
+                                                placeholder="The standard answer for this sub-part",
+                                                value=subpart.get("answer", ""),
+                                                on_change=make_subpart_answer_handler(i, si),
+                                            ).classes("w-full mt-1")
 
             def add_part():
                 """Append a new, expanded sub-problem and collapse the rest.
@@ -1568,27 +1401,25 @@ def render_question_editor(
                             sp_table_blocks = [
                                 b for b in (sp.get("blocks") or []) if b.get("type") == "table"
                             ]
-                            if sp_table_blocks:
-                                for tb in sp_table_blocks:
-                                    spec = _table_spec(tb)
-                                    if not spec["answer_columns"]:
-                                        errors.append(f"Sub-part {sp_label}'s table needs at least one answer column")
-                                    if not spec["rows"]:
-                                        errors.append(f"Sub-part {sp_label}'s table needs at least one row of data")
-                            elif not (sp.get("answer") or "").strip():
+                            for tb in sp_table_blocks:
+                                spec = _table_spec(tb)
+                                if not spec["answer_columns"]:
+                                    errors.append(f"Sub-part {sp_label}'s table needs at least one answer column")
+                                if not spec["rows"]:
+                                    errors.append(f"Sub-part {sp_label}'s table needs at least one row of data")
+                            if not (sp.get("answer") or "").strip():
                                 errors.append(f"Sub-part {sp_label} is missing a standard answer")
                         continue
                     if not (p.get("marks") or 0) > 0:
                         errors.append(f"Sub-problem ({lbl}) must have marks greater than 0")
                     table_blocks = [b for b in (p.get("blocks") or []) if b.get("type") == "table"]
-                    if table_blocks:
-                        for tb in table_blocks:
-                            spec = _table_spec(tb)
-                            if not spec["answer_columns"]:
-                                errors.append(f"Sub-problem ({lbl})'s table needs at least one answer column")
-                            if not spec["rows"]:
-                                errors.append(f"Sub-problem ({lbl})'s table needs at least one row of data")
-                    elif not (p.get("answer") or "").strip():
+                    for tb in table_blocks:
+                        spec = _table_spec(tb)
+                        if not spec["answer_columns"]:
+                            errors.append(f"Sub-problem ({lbl})'s table needs at least one answer column")
+                        if not spec["rows"]:
+                            errors.append(f"Sub-problem ({lbl})'s table needs at least one row of data")
+                    if not (p.get("answer") or "").strip():
                         errors.append(f"Sub-problem ({lbl}) is missing a standard answer")
             else:
                 if not (marks_input.value or 0) > 0:

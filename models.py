@@ -102,12 +102,11 @@ class QuestionPart(Base):
     #                 lettered (a)/(b)/(c)... label. Optionally has an
     #                 attached image (`image_data`).
     #   "table"    -- step-by-step/tracing table. Gradable, same labelling
-    #                 as "text". `table_spec` holds the *problem* table
-    #                 (what the student sees) and `answer_table_spec`
-    #                 holds the *answer* table (shown only in the
-    #                 solutions export) -- two independent JSON-encoded
-    #                 column/row definitions, not one table with masked
-    #                 columns. Optionally has an attached image too.
+    #                 as "text", including a free-text standard answer in
+    #                 `answer`. `table_spec` holds the *problem* table
+    #                 (what the student sees) -- a JSON-encoded
+    #                 column/row definition. Optionally has an attached
+    #                 image too.
     #   "material" -- (legacy) a block of reading material/stimulus text
     #                 (reuses `description`), not gradable: no marks, no
     #                 letter label, no answer.
@@ -115,11 +114,15 @@ class QuestionPart(Base):
     #                 `description` doubles as an optional caption.
     part_type = Column("Part type", Text, nullable=False, default="text")
     table_spec = Column("Table spec", Text)
-    # The model-answer counterpart to `table_spec`: same
-    # {"given_columns", "answer_columns", "rows"} shape, but fully filled
-    # in with the correct answers. Rendered instead of `table_spec` only
-    # in "solutions" mode. None for "text" parts (and for "table" parts
-    # that haven't had their answer table filled in yet).
+    # Legacy: used to hold a model-answer counterpart to `table_spec`
+    # (same {"given_columns", "answer_columns", "rows"} shape, fully
+    # filled in), rendered as a second, mirrored table only in
+    # "solutions" mode. That table-answer grid has since been removed --
+    # a "table" part's standard answer is now free text, in `answer`,
+    # same as a "text" part's. No longer written by
+    # replace_question_parts(); the column (and get_question_parts()'s
+    # decoding of it) is kept only so rows saved before the removal
+    # still round-trip their old data instead of losing it outright.
     answer_table_spec = Column("Answer table spec", Text)
     # Base64-encoded raw image bytes for an attached image, and the
     # original uploaded filename (kept for display/debugging only -- the
@@ -133,25 +136,27 @@ class QuestionPart(Base):
     # table" layout above. Each block is
     # {"type": "text", "text": str} |
     # {"type": "image", "image_data": base64 str, "image_filename": str} |
-    # {"type": "table", "table_spec": {...}, "answer_table_spec": {...}}
+    # {"type": "table", "table_spec": {...}}
     # (same {"given_columns", "answer_columns", "rows"} shape as
-    # `table_spec`/`answer_table_spec` above), in whatever order the
-    # teacher arranged them in -- e.g. text, then a diagram, then more
-    # text, then a tracing table, letting a sub-problem's image and extra
-    # instructions sit between two paragraphs instead of always after all
-    # of the text. May hold any number of blocks of each type.
+    # `table_spec` above), in whatever order the teacher arranged them
+    # in -- e.g. text, then a diagram, then more text, then a tracing
+    # table, letting a sub-problem's image and extra instructions sit
+    # between two paragraphs instead of always after all of the text.
+    # May hold any number of blocks of each type. A table block's
+    # standard answer is not stored here -- it's free text, on the
+    # owning part's (or sub-part's) own `answer`, same as a "text" part.
     #
     # This column is nullable so old rows (written before this feature
     # existed) don't need a data migration: database.py's
     # get_question_parts() synthesizes an equivalent blocks list on the
     # fly from `description`/`image_data`/`table_spec` when this is NULL.
-    # `description`, `image_data`, `image_filename`, `table_spec`, and
-    # `answer_table_spec` are still kept in sync on every save (see
-    # database.py's replace_question_parts) as best-effort single-value
-    # summaries -- concatenated text, first image, first table -- purely
-    # so older code paths that only know about those columns (e.g.
-    # edit_question.py's "can this question be edited here" check) keep
-    # working; `content_blocks` is the source of truth for rendering.
+    # `description`, `image_data`, `image_filename`, and `table_spec` are
+    # still kept in sync on every save (see database.py's
+    # replace_question_parts) as best-effort single-value summaries --
+    # concatenated text, first image, first table -- purely so older code
+    # paths that only know about those columns (e.g. edit_question.py's
+    # "can this question be edited here" check) keep working;
+    # `content_blocks` is the source of truth for rendering.
     content_blocks = Column("Content blocks", Text)
     # JSON-encoded ordered list of *sub-parts* -- the third numbering level,
     # (i)/(ii)/(iii)... nested inside this (a)/(b)/(c)... sub-problem, for
@@ -160,8 +165,8 @@ class QuestionPart(Base):
     # same shape create_question.py's _build_part_dict() already produces
     # for a top-level part -- "Label" (here a lower-case Roman numeral,
     # e.g. "i"), "Content blocks", "Marks", "Answer space", "Part type",
-    # "Table spec", "Answer table spec", "Answer", "Image data", "Image
-    # filename" -- but never itself carries a further "Sub parts" (the
+    # "Table spec", "Answer", "Image data", "Image filename" -- but never
+    # itself carries a further "Sub parts" (the
     # UI caps nesting at this one extra level: 1./2./3. -> (a)(b)(c) ->
     # (i)(ii)(iii), no deeper).
     #

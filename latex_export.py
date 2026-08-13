@@ -351,12 +351,10 @@ def _render_table_spec(spec: dict, *, stretched: bool) -> str:
     """Render a bordered, wrapped LaTeX table from a resolved table spec.
 
     Used for step-by-step / tracing questions -- see database.py's
-    replace_question_parts docstring for the "Table spec"/"Answer table
-    spec" shape this reads. A "table"-type part carries two independent
-    specs (the problem table and the answer table); the caller
-    (`_render_question`) picks which one to pass in based on export mode
-    -- there's no per-column masking here any more, cells are printed
-    exactly as given (including blank, for "the student writes here").
+    replace_question_parts docstring for the "Table spec" shape this
+    reads (the problem table, what the student sees) -- there's no
+    per-column masking here, cells are printed exactly as given
+    (including blank, for "the student writes here").
 
     Columns are wrapped `p{width}` cells (evenly splitting the page's
     text width, `array`'s `\\raggedright\\arraybackslash` keeps them
@@ -369,9 +367,10 @@ def _render_table_spec(spec: dict, *, stretched: bool) -> str:
     on the same white background as the data rows.
 
     Row height is stretched when `stretched` is True so there's actually
-    room to write by hand in a blank cell (the problem table, on
-    official/example); the answer table uses a normal, compact row
-    height since nothing needs to be written by hand there.
+    room to write by hand in a blank cell -- used outside "solutions"
+    mode, where the student needs room to fill the table in; compact in
+    "solutions" mode, where the table is just shown for reference and
+    nothing needs to be written by hand.
 
     Args:
         spec: A {"given_columns", "answer_columns", "rows"} dict.
@@ -447,47 +446,27 @@ def _render_table_spec(spec: dict, *, stretched: bool) -> str:
 
 
 def _render_table_block(block: dict, *, mode: str) -> str:
-    """Render one "table"-type content block's full body for a given export mode.
+    """Render one "table"-type content block's problem table, on every export mode.
 
-    A table block is just its rows on official/example (see
-    _render_table_spec's docstring: the table cells themselves are the
-    answer space, so there's no separate blank area or Solution box for
-    it there). In "solutions" mode, though, a table's answer may need
-    surrounding prose -- e.g. "Solution: sorted edges: ..." explaining
-    the method before the filled-in answer table, and a closing line
-    like "Final MST total weight: 19" after it -- so this also renders
-    the block's optional "answer_text_before"/"answer_text_after" (see
-    create_question.py's _render_block_editor) around the table, but
-    only in "solutions" mode; official/example students never see them.
+    A table block is just its rows -- the same problem table (what the
+    student sees, blank cells and all) on official/example/solutions
+    alike; its standard answer is free text, rendered separately via the
+    owning sub-question's normal solution box (_render_solution_block),
+    exactly like a text-only sub-question's, rather than as a second
+    mirrored table here. Row height is only stretched (extra room for
+    handwriting) outside "solutions" mode -- nothing needs to be written
+    by hand there.
 
     Args:
-        block: One "table"-type content block dict, carrying "table_spec",
-            "answer_table_spec", and optionally "answer_text_before"/
-            "answer_text_after".
-        mode: One of _MODES -- picks the problem table vs. answer table,
-            and whether the before/after solution text is rendered at all.
+        block: One "table"-type content block dict, carrying "table_spec".
+        mode: One of _MODES -- only affects row height/stretching here.
 
     Returns:
-        LaTeX source for the table (and, in "solutions" mode, any
-        surrounding solution text), ready to be appended as its own
+        LaTeX source for the table, ready to be appended as its own
         block of lines.
     """
-    if mode == "solutions":
-        spec = block.get("answer_table_spec") or block.get("table_spec") or {}
-    else:
-        spec = block.get("table_spec") or {}
-
-    parts = []
-    if mode == "solutions":
-        before = (block.get("answer_text_before") or "").strip()
-        if before:
-            parts.append(_paragraphs(before))
-    parts.append(_render_table_spec(spec, stretched=(mode != "solutions")))
-    if mode == "solutions":
-        after = (block.get("answer_text_after") or "").strip()
-        if after:
-            parts.append(_paragraphs(after))
-    return "\n\n".join(parts)
+    spec = block.get("table_spec") or {}
+    return _render_table_spec(spec, stretched=(mode != "solutions"))
 
 
 _ROMAN_VALUES = [
@@ -840,15 +819,12 @@ def _render_question(
                 elif btype == "table":
                     # A table's own rows are its "answer space" -- no
                     # blank \vspace and no "tick here if you continue"
-                    # line. The problem table (what the student sees) is
-                    # rendered on official/example; the independent
-                    # answer table (filled in with the correct values),
-                    # plus any solution text the teacher attached before/
-                    # after it, is rendered instead, in full, only in
-                    # "solutions" mode -- falling back to the problem
-                    # table if no answer table was ever filled in, so a
-                    # table with no recorded answer doesn't just vanish
-                    # from the solutions export. See _render_table_block.
+                    # line. The same problem table (what the student
+                    # sees) is rendered on every mode; the standard
+                    # answer for the whole sub-question is free text,
+                    # shown separately below via the normal solution box
+                    # (see the has_table_block handling further down),
+                    # exactly like a text-only sub-question's.
                     lines.append(_render_table_block(block, mode=mode))
 
             # A sub-problem broken down further into (i)/(ii)/(iii)... --
@@ -892,7 +868,10 @@ def _render_question(
                             lines.append(_render_table_block(block, mode=mode))
 
                     if sub_has_table:
-                        lines.append("")
+                        if mode == "solutions":
+                            lines.append(_render_solution_block(sub_part.get("Answer")))
+                        else:
+                            lines.append("")
                         continue
 
                     if mode == "solutions":
@@ -922,7 +901,10 @@ def _render_question(
                 continue
 
             if has_table_block:
-                lines.append("")
+                if mode == "solutions":
+                    lines.append(_render_solution_block(part.get("Answer")))
+                else:
+                    lines.append("")
                 continue
 
             if mode == "solutions":

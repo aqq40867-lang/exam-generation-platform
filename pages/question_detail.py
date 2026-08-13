@@ -118,18 +118,10 @@ def _render_blocks(blocks: list) -> None:
                 "text-xs font-bold text-grey-600 mt-1"
             )
             _render_one_table(block.get("table_spec"), empty_message="(Table not configured yet.)")
-            ui.label("Answer table (model answer, solutions export only):").classes(
-                "text-xs font-bold text-grey-600 mt-3"
-            )
-            before = (block.get("answer_text_before") or "").strip()
-            if before:
-                ui.label(before).classes("whitespace-pre-line text-sm italic mt-1")
-            _render_one_table(
-                block.get("answer_table_spec"), empty_message="(Answer table not filled in yet.)"
-            )
-            after = (block.get("answer_text_after") or "").strip()
-            if after:
-                ui.label(after).classes("whitespace-pre-line text-sm italic mt-1")
+            # The standard answer for a table sub-question is free text,
+            # shown in this part's own "Answer:" card below (see
+            # question_detail_page()) -- same as a text-only sub-question's
+            # -- not as a second mirrored table here.
 
 
 def _render_part_blocks(part: dict) -> None:
@@ -287,7 +279,6 @@ def question_detail_page(question_id: int):
                                         "w-full gap-2 mt-2 pl-4 border-l-2 border-grey-300"
                                     ):
                                         for sub_part in sub_parts:
-                                            sub_type = sub_part.get("Part type") or "text"
                                             sub_blocks = sub_part.get("Content blocks") or []
                                             sub_first_text = (
                                                 sub_blocks[0].get("text")
@@ -307,16 +298,15 @@ def question_detail_page(question_id: int):
 
                                             _render_part_blocks(sub_part)
 
-                                            if sub_type != "table":
-                                                with ui.card().classes("bg-grey-100 w-full p-3 mt-1"):
-                                                    ui.label("Answer:").classes(
-                                                        "text-xs font-bold text-grey-600"
-                                                    )
-                                                    ui.label(
-                                                        sub_part.get("Answer")
-                                                        or "(no standard answer recorded)"
-                                                    ).classes("whitespace-pre-line")
-                                elif part_type != "table":
+                                            with ui.card().classes("bg-grey-100 w-full p-3 mt-1"):
+                                                ui.label("Answer:").classes(
+                                                    "text-xs font-bold text-grey-600"
+                                                )
+                                                ui.label(
+                                                    sub_part.get("Answer")
+                                                    or "(no standard answer recorded)"
+                                                ).classes("whitespace-pre-line")
+                                else:
                                     with ui.card().classes("bg-grey-100 w-full p-3 mt-1"):
                                         ui.label("Answer:").classes("text-xs font-bold text-grey-600")
                                         ui.label(
